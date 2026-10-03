@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react"
 import { useAccount } from "wagmi"
 import {
   Bot, User, Send, Mic, MicOff, Loader2, Wallet, ArrowUpRight, Coins,
-  Boxes, LineChart, Link2, Copy, Check, CalendarClock, FileText, Rocket, HelpCircle,
+  Boxes, LineChart, Link2, Copy, Check, CalendarClock, FileText, Rocket,
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -280,7 +280,7 @@ Try things like:
 Pick a signing mode in the sidebar **Signing** panel — connect a **wallet** (approve each txn with a button) or go **autonomous** with a private key. Tap **How it works** anytime for the tour.`
 
 export default function AstraxChatPage() {
-  const { privateKey, signingMode, activeAddress } = useCredentials()
+  const { privateKey, signingMode } = useCredentials()
   const { address } = useAccount()
   const [isRecording, setIsRecording] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
@@ -304,9 +304,12 @@ export default function AstraxChatPage() {
 
   const isLoading = status === "submitted" || status === "streaming"
 
-  // Show the tutorial once per browser.
+  // Show the tutorial once per browser, and when the header button asks for it.
   useEffect(() => {
     if (!localStorage.getItem("astrax_onboarded")) setShowOnboarding(true)
+    const open = () => setShowOnboarding(true)
+    window.addEventListener("openOnboarding", open)
+    return () => window.removeEventListener("openOnboarding", open)
   }, [])
 
   const closeOnboarding = () => {
@@ -339,36 +342,12 @@ export default function AstraxChatPage() {
     handleSubmit(e)
   }
 
-  const modeBadge =
-    signingMode === "auto"
-      ? activeAddress
-        ? "Autonomous"
-        : "Autonomous · add key"
-      : address
-        ? "Wallet connected"
-        : "Connect wallet"
-
   return (
     <div className="h-full flex flex-col bg-white dark:bg-black text-black dark:text-white transition-colors duration-300">
       <OnboardingModal isOpen={showOnboarding} onClose={closeOnboarding} />
 
-      {/* Mode strip */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-gray-100 dark:border-gray-900 text-xs">
-        <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
-          <span className={cn("w-2 h-2 rounded-full", (signingMode === "auto" ? activeAddress : address) ? "bg-green-500" : "bg-yellow-500")} />
-          <span>{modeBadge}</span>
-          {activeAddress && <span className="font-mono">· {short(activeAddress)}</span>}
-        </div>
-        <button
-          onClick={() => setShowOnboarding(true)}
-          className="inline-flex items-center gap-1 text-gray-500 hover:text-black dark:hover:text-white transition-colors"
-        >
-          <HelpCircle className="w-3.5 h-3.5" /> How it works
-        </button>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-4 py-6">
-        <div className="max-w-3xl mx-auto space-y-5">
+      <div className="flex-1 overflow-y-auto px-4 md:px-6 py-6">
+        <div className="w-full space-y-5">
           {messages.map((m) => {
             const invocations = (m as any).toolInvocations ?? []
             return (
@@ -414,7 +393,7 @@ export default function AstraxChatPage() {
 
       {/* Composer */}
       <div className="border-t border-gray-200 dark:border-gray-800 px-4 py-4">
-        <form onSubmit={onSubmit} className="max-w-3xl mx-auto relative">
+        <form onSubmit={onSubmit} className="w-full relative">
           <Input
             value={input}
             onChange={handleInputChange}

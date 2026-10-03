@@ -6,7 +6,7 @@ import { useAccount } from "wagmi"
 import {
   Bot, User, Send, Mic, MicOff, Loader2, Wallet, ArrowUpRight, Coins,
   Boxes, LineChart, Link2, Copy, Check, CalendarClock, FileText, Rocket,
-  Paperclip, X, Image as ImageIcon,
+  Paperclip, X, Image as ImageIcon, Code,
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -83,6 +83,46 @@ const CardShell = ({ icon, title, children }: { icon: React.ReactNode; title: st
 
 const short = (a?: string) => (a && a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a || "")
 
+function fileToDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(r.result as string)
+    r.onerror = reject
+    r.readAsDataURL(file)
+  })
+}
+
+// ── Image / diagram card (generated images + mermaid diagrams) ──────────────────
+function ImageCard({ result }: { result: any }) {
+  const [showSource, setShowSource] = useState(false)
+  const src = result.imageBase64 ? `data:image/png;base64,${result.imageBase64}` : result.imageUrl
+  return (
+    <div className="mt-3 w-full max-w-xl rounded-lg border border-gray-300 dark:border-gray-800 bg-white dark:bg-black p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <div className="w-7 h-7 rounded-full bg-gray-800 dark:bg-white text-white dark:text-black flex items-center justify-center"><ImageIcon className="w-4 h-4" /></div>
+          {result.title || "Image"}
+        </div>
+        <a href={src} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline">
+          Open <ArrowUpRight className="w-3 h-3" />
+        </a>
+      </div>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={src} alt={result.title || "generated image"} className="w-full rounded-md border border-gray-200 dark:border-gray-800" />
+      {result.mermaid && (
+        <div className="mt-2">
+          <button onClick={() => setShowSource((s) => !s)} className="text-xs text-gray-500 hover:text-black dark:hover:text-white inline-flex items-center gap-1">
+            <Code className="w-3.5 h-3.5" /> {showSource ? "Hide" : "View"} Mermaid source
+          </button>
+          {showSource && (
+            <pre className="mt-2 text-xs font-mono bg-gray-100 dark:bg-gray-900 rounded-md p-3 overflow-x-auto whitespace-pre-wrap">{result.mermaid}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Render a tool result into a card ────────────────────────────────────────────
 function ToolCard({ result }: { result: any }) {
   if (!result || result.error) {
@@ -153,20 +193,7 @@ function ToolCard({ result }: { result: any }) {
     case "candlestick":
       return <div className="mt-3 w-full max-w-2xl"><CandlestickChart data={result.data} symbol={result.symbol} /></div>
     case "image":
-      return (
-        <div className="mt-3 w-full max-w-xl rounded-lg border border-gray-300 dark:border-gray-800 bg-white dark:bg-black p-4">
-          <div className="flex items-center gap-2 mb-3 text-sm font-medium">
-            <div className="w-7 h-7 rounded-full bg-gray-800 dark:bg-white text-white dark:text-black flex items-center justify-center"><ImageIcon className="w-4 h-4" /></div>
-            {result.title || "Image"}
-          </div>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={result.imageBase64 ? `data:image/png;base64,${result.imageBase64}` : result.imageUrl}
-            alt={result.title || "generated image"}
-            className="w-full rounded-md border border-gray-200 dark:border-gray-800"
-          />
-        </div>
-      )
+      return <ImageCard result={result} />
     case "market":
       return (
         <CardShell icon={<LineChart className="w-4 h-4" />} title={`${result.name} Market`}>
@@ -299,6 +326,15 @@ Try things like:
 
 Pick a signing mode in the sidebar **Signing** panel — connect a **wallet** (approve each txn with a button) or go **autonomous** with a private key. Tap **How it works** anytime for the tour.`
 
+const SUGGESTIONS = [
+  { icon: <Wallet className="w-3.5 h-3.5" />, label: "Check my S balance", prompt: "What's my S balance?" },
+  { icon: <LineChart className="w-3.5 h-3.5" />, label: "S price chart", prompt: "Show me the S price chart for the last 7 days" },
+  { icon: <Rocket className="w-3.5 h-3.5" />, label: "Create a token", prompt: "Create a token called MoonCoin with symbol MOON and supply 1000000" },
+  { icon: <Code className="w-3.5 h-3.5" />, label: "Workflow diagram", prompt: "Draw a workflow diagram for a basic ERC-20 token contract" },
+  { icon: <Link2 className="w-3.5 h-3.5" />, label: "Payment link", prompt: "Create a payment link for 0.5 S" },
+  { icon: <Boxes className="w-3.5 h-3.5" />, label: "Latest blocks", prompt: "Show me the latest blocks on Sonic" },
+]
+
 export default function AstraxChatPage() {
   const { privateKey, signingMode } = useCredentials()
   const { address } = useAccount()
@@ -318,7 +354,8 @@ export default function AstraxChatPage() {
     api: "/api/agent",
     initialMessages: [{ id: "welcome", role: "assistant", content: WELCOME }],
     experimental_prepareRequestBody: ({ messages }) => ({
-      messages,
+      // Keep the model text-only (strip image attachments used purely for display).
+      messages: messages.map((m: any) => ({ id: m.id, role: m.role, content: m.content, toolInvocations: m.toolInvocations })),
       signingMode: ctxRef.current.signingMode,
       credentials: { privateKey: ctxRef.current.privateKey },
       walletAddress: ctxRef.current.address ?? null,
@@ -373,11 +410,15 @@ export default function AstraxChatPage() {
           const { ipfsUrl } = await uploadFileToIPFS(f)
           links.push(`${f.name}: ${ipfsUrl}`)
         }
+        // Image thumbnails to show inside the user's own message bubble.
+        const previews = await Promise.all(
+          files.filter((f) => f.type.startsWith("image/")).map(async (f) => ({ name: f.name, contentType: f.type, url: await fileToDataURL(f) })),
+        )
         const base = input.trim() ? `${input.trim()}\n\n` : ""
         const text = `${base}I attached file(s) stored on IPFS — please save them with storeAsset: ${links.join(" | ")}`
         setInput("")
         setFiles([])
-        append({ role: "user", content: text })
+        append({ role: "user", content: text, experimental_attachments: previews })
       } catch {
         alert("IPFS upload failed. Add NEXT_PUBLIC_PINATA_JWT to enable file uploads.")
       } finally {
@@ -421,6 +462,17 @@ export default function AstraxChatPage() {
                       <Markdown text={m.content} />
                     </div>
                   )}
+                  {/* Image attachments the user sent (shown in their own bubble) */}
+                  {(m as any).experimental_attachments?.length > 0 && (
+                    <div className={cn("mt-2 flex flex-wrap gap-2", m.role === "user" ? "justify-end" : "")}>
+                      {(m as any).experimental_attachments
+                        .filter((a: any) => a.contentType?.startsWith("image/"))
+                        .map((a: any, i: number) => (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img key={i} src={a.url} alt={a.name} className="max-h-40 rounded-lg border border-gray-300 dark:border-gray-700" />
+                        ))}
+                    </div>
+                  )}
                   {invocations.map((inv: any) =>
                     inv.state === "result" ? <ToolCard key={inv.toolCallId} result={inv.result} /> : null,
                   )}
@@ -428,6 +480,24 @@ export default function AstraxChatPage() {
               </div>
             )
           })}
+
+          {/* Starter suggestions (only on a fresh conversation) */}
+          {messages.length <= 1 && !isLoading && (
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 flex-shrink-0" />
+              <div className="flex flex-wrap gap-2">
+                {SUGGESTIONS.map((s) => (
+                  <button
+                    key={s.label}
+                    onClick={() => append({ role: "user", content: s.prompt })}
+                    className="inline-flex items-center gap-1.5 text-sm rounded-full border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-gray-600 dark:text-gray-300 hover:border-gray-500 dark:hover:border-gray-500 hover:text-black dark:hover:text-white transition-colors"
+                  >
+                    {s.icon} {s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {isLoading && messages[messages.length - 1]?.role === "user" && (
             <div className="flex items-start gap-3">

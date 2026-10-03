@@ -5,13 +5,14 @@ import { useEffect, useRef, useState } from "react"
 import { useAccount } from "wagmi"
 import {
   Bot, User, Send, Mic, MicOff, Loader2, Wallet, ArrowUpRight, Coins,
-  Boxes, LineChart, Link2, Copy, Check, CalendarClock, FileText, Rocket,
+  Boxes, LineChart, Link2, Copy, Check, CalendarClock, FileText, Rocket, HelpCircle,
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { useCredentials } from "@/contexts/CredentialsContext"
-import { AccessControlModal } from "@/components/access-control-modal"
+import { OnboardingModal } from "@/components/onboarding-modal"
+import { TxActionButton, type PendingAction } from "@/components/ui/tx-action-button"
 import TokenListCard from "@/components/ui/token-list-card"
 
 const EXPLORER = "https://explorer.testnet.soniclabs.com"
@@ -87,6 +88,11 @@ function ToolCard({ result }: { result: any }) {
         <Markdown text={result.error} />
       </div>
     ) : null
+  }
+
+  // Wallet-mode prepared transaction → render a one-click confirm button.
+  if (result.kind === "action") {
+    return <TxActionButton action={result as PendingAction} />
   }
 
   switch (result.kind) {
@@ -271,43 +277,42 @@ Try things like:
 - "Create a **payment link** for 0.5 S"
 - "Schedule **2 S** to \`0x…\` **in 10 minutes**"
 
-Add your wallet keys in **Wallet Credentials** (sidebar) so I can sign transactions for you.`
+Pick a signing mode in the sidebar **Signing** panel — connect a **wallet** (approve each txn with a button) or go **autonomous** with a private key. Tap **How it works** anytime for the tour.`
 
 export default function AstraxChatPage() {
-  const { publicKey, privateKey, hasAccess } = useCredentials()
-  const { isConnected } = useAccount()
-  const [showAccessModal, setShowAccessModal] = useState(true)
-  const [sessionId, setSessionId] = useState<string | null>(null)
+  const { privateKey, signingMode, activeAddress } = useCredentials()
+  const { address } = useAccount()
   const [isRecording, setIsRecording] = useState(false)
+  const [showOnboarding, setShowOnboarding] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const recognitionRef = useRef<any>(null)
 
-  const credsRef = useRef({ publicKey, privateKey })
-  credsRef.current = { publicKey, privateKey }
+  // Keep the latest signing context in a ref so each request sends fresh values.
+  const ctxRef = useRef({ privateKey, signingMode, address })
+  ctxRef.current = { privateKey, signingMode, address }
 
-  const { messages, input, handleInputChange, handleSubmit, status, append, setInput } = useChat({
+  const { messages, input, handleInputChange, handleSubmit, status, setInput } = useChat({
     api: "/api/agent",
     initialMessages: [{ id: "welcome", role: "assistant", content: WELCOME }],
     experimental_prepareRequestBody: ({ messages }) => ({
       messages,
-      credentials: credsRef.current,
-      publicKey: credsRef.current.publicKey,
+      signingMode: ctxRef.current.signingMode,
+      credentials: { privateKey: ctxRef.current.privateKey },
+      walletAddress: ctxRef.current.address ?? null,
     }),
   })
 
   const isLoading = status === "submitted" || status === "streaming"
 
+  // Show the tutorial once per browser.
   useEffect(() => {
-    if (isConnected && hasAccess) setShowAccessModal(false)
-    else setShowAccessModal(true)
-  }, [isConnected, hasAccess])
-
-  useEffect(() => {
-    setSessionId(localStorage.getItem("sessionId"))
-    const onNew = () => setSessionId(localStorage.getItem("sessionId"))
-    window.addEventListener("newSessionCreated", onNew)
-    return () => window.removeEventListener("newSessionCreated", onNew)
+    if (!localStorage.getItem("astrax_onboarded")) setShowOnboarding(true)
   }, [])
+
+  const closeOnboarding = () => {
+    localStorage.setItem("astrax_onboarded", "1")
+    setShowOnboarding(false)
+  }
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }) }, [messages])
 
@@ -334,34 +339,34 @@ export default function AstraxChatPage() {
     handleSubmit(e)
   }
 
-  // ── Gating ────────────────────────────────────────────────────────────────
-  if (!hasAccess || showAccessModal) {
-    return (
-      <>
-        <AccessControlModal isOpen={showAccessModal} onAccessGranted={() => setShowAccessModal(false)} />
-        <div className="h-full flex items-center justify-center text-center">
-          <div>
-            <h1 className="text-2xl font-semibold mb-2">Astrax AI Assistant</h1>
-            <p className="text-gray-600 dark:text-gray-400">Connect your wallet to continue</p>
-          </div>
-        </div>
-      </>
-    )
-  }
-
-  if (!sessionId) {
-    return (
-      <div className="h-full flex items-center justify-center text-center">
-        <div>
-          <h1 className="text-2xl font-semibold mb-2">Astrax AI Assistant</h1>
-          <p className="text-gray-600 dark:text-gray-400">Create a session with the “New Session” button in the header to begin.</p>
-        </div>
-      </div>
-    )
-  }
+  const modeBadge =
+    signingMode === "auto"
+      ? activeAddress
+        ? "Autonomous"
+        : "Autonomous · add key"
+      : address
+        ? "Wallet connected"
+        : "Connect wallet"
 
   return (
     <div className="h-full flex flex-col bg-white dark:bg-black text-black dark:text-white transition-colors duration-300">
+      <OnboardingModal isOpen={showOnboarding} onClose={closeOnboarding} />
+
+      {/* Mode strip */}
+      <div className="flex items-center justify-between px-4 py-2 border-b border-gray-100 dark:border-gray-900 text-xs">
+        <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
+          <span className={cn("w-2 h-2 rounded-full", (signingMode === "auto" ? activeAddress : address) ? "bg-green-500" : "bg-yellow-500")} />
+          <span>{modeBadge}</span>
+          {activeAddress && <span className="font-mono">· {short(activeAddress)}</span>}
+        </div>
+        <button
+          onClick={() => setShowOnboarding(true)}
+          className="inline-flex items-center gap-1 text-gray-500 hover:text-black dark:hover:text-white transition-colors"
+        >
+          <HelpCircle className="w-3.5 h-3.5" /> How it works
+        </button>
+      </div>
+
       <div className="flex-1 overflow-y-auto px-4 py-6">
         <div className="max-w-3xl mx-auto space-y-5">
           {messages.map((m) => {

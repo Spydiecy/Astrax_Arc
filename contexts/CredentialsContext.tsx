@@ -1,108 +1,83 @@
 "use client"
 
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react'
-import { useAccount, useReadContract } from 'wagmi'
-import { ACCESS_CONTROL_CONFIG, ACCESS_CONTROL_ABI } from '@/lib/accessControl'
+import React, { createContext, useContext, useState, useEffect, ReactNode } from "react"
+import { useAccount } from "wagmi"
+import { privateKeyToAccount } from "viem/accounts"
+
+export type SigningMode = "auto" | "wallet"
 
 interface CredentialsContextType {
-  publicKey: string
+  /** Raw private key the user optionally pastes (autonomous mode). */
   privateKey: string
-  setPublicKey: (key: string) => void
   setPrivateKey: (key: string) => void
-  hasCredentials: boolean
-  isConfirmed: boolean
-  confirmCredentials: () => void
-  hasAccess: boolean
-  isCheckingAccess: boolean
+  /** Address derived from the private key (null if key is empty/invalid). */
+  derivedAddress: string | null
+  hasPrivateKey: boolean
+  /** How transactions are signed: server-side with the key, or in the user's wallet. */
+  signingMode: SigningMode
+  setSigningMode: (m: SigningMode) => void
+  /** The address the agent should treat as "the user" for the active mode. */
+  activeAddress: string | null
 }
 
 const CredentialsContext = createContext<CredentialsContextType | undefined>(undefined)
 
+function deriveAddress(key: string): string | null {
+  const trimmed = key.trim()
+  if (!trimmed) return null
+  try {
+    const pk = (trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`) as `0x${string}`
+    if (pk.length !== 66) return null
+    return privateKeyToAccount(pk).address
+  } catch {
+    return null
+  }
+}
+
 export function CredentialsProvider({ children }: { children: ReactNode }) {
-  const [publicKey, setPublicKeyState] = useState<string>("")
-  const [privateKey, setPrivateKeyState] = useState<string>("")
-  const [isConfirmed, setIsConfirmed] = useState<boolean>(false)
-  
+  const [privateKey, setPrivateKeyState] = useState("")
+  const [derivedAddress, setDerivedAddress] = useState<string | null>(null)
+  const [signingMode, setSigningModeState] = useState<SigningMode>("wallet")
+
   const { address, isConnected } = useAccount()
 
-  // Check access control subscription
-  const { 
-    data: contractHasAccess, 
-    isLoading: isCheckingAccess, 
-    refetch: refetchAccess,
-    error: accessError
-  } = useReadContract({
-    address: ACCESS_CONTROL_CONFIG.contractAddress as `0x${string}`,
-    abi: ACCESS_CONTROL_ABI,
-    functionName: 'hasPaid',
-    args: address ? [address] : undefined,
-    query: {
-      enabled: !!address && isConnected,
-      refetchInterval: 15000, // Refetch every 15 seconds for more responsiveness
-      retry: 3, // Retry failed requests
-      retryDelay: 1000, // Wait 1 second between retries
-    }
-  })
-
-  // Handle access determination with error handling
-  const hasAccess = contractHasAccess === true // Explicit true check
-
-  // Load credentials from localStorage on mount
+  // Load persisted state on mount
   useEffect(() => {
-    const storedPublicKey = localStorage.getItem("wallet_public_key")
-    const storedPrivateKey = localStorage.getItem("wallet_private_key")
-    const storedConfirmed = localStorage.getItem("wallet_credentials_confirmed")
-    
-    if (storedPublicKey) setPublicKeyState(storedPublicKey)
-    if (storedPrivateKey) setPrivateKeyState(storedPrivateKey)
-    if (storedConfirmed === "true") setIsConfirmed(true)
+    const storedKey = localStorage.getItem("wallet_private_key") || ""
+    const storedMode = (localStorage.getItem("astrax_signing_mode") as SigningMode) || null
+    if (storedKey) {
+      setPrivateKeyState(storedKey)
+      setDerivedAddress(deriveAddress(storedKey))
+    }
+    if (storedMode === "auto" || storedMode === "wallet") setSigningModeState(storedMode)
+    else setSigningModeState(storedKey ? "auto" : "wallet")
   }, [])
-
-  // Refetch access when wallet connects/disconnects
-  useEffect(() => {
-    if (address) {
-      refetchAccess()
-    }
-  }, [address, refetchAccess])
-
-  // Save to localStorage whenever keys change
-  const setPublicKey = (key: string) => {
-    setPublicKeyState(key)
-    localStorage.setItem("wallet_public_key", key)
-    // Reset confirmation when credentials change
-    setIsConfirmed(false)
-    localStorage.removeItem("wallet_credentials_confirmed")
-  }
 
   const setPrivateKey = (key: string) => {
     setPrivateKeyState(key)
+    setDerivedAddress(deriveAddress(key))
     localStorage.setItem("wallet_private_key", key)
-    // Reset confirmation when credentials change
-    setIsConfirmed(false)
-    localStorage.removeItem("wallet_credentials_confirmed")
   }
 
-  const confirmCredentials = () => {
-    if (publicKey && privateKey) {
-      setIsConfirmed(true)
-      localStorage.setItem("wallet_credentials_confirmed", "true")
-    }
+  const setSigningMode = (m: SigningMode) => {
+    setSigningModeState(m)
+    localStorage.setItem("astrax_signing_mode", m)
   }
 
-  const hasCredentials = Boolean(publicKey && privateKey)
+  const hasPrivateKey = Boolean(derivedAddress)
+  const activeAddress =
+    signingMode === "auto" ? derivedAddress : isConnected ? address ?? null : null
 
   return (
     <CredentialsContext.Provider
       value={{
-        publicKey,
         privateKey,
-        setPublicKey,
         setPrivateKey,
-        hasCredentials,
-        isConfirmed,
-        confirmCredentials,
-        hasAccess,
-        isCheckingAccess
+        derivedAddress,
+        hasPrivateKey,
+        signingMode,
+        setSigningMode,
+        activeAddress,
       }}
     >
       {children}
@@ -113,7 +88,7 @@ export function CredentialsProvider({ children }: { children: ReactNode }) {
 export function useCredentials() {
   const context = useContext(CredentialsContext)
   if (context === undefined) {
-    throw new Error('useCredentials must be used within a CredentialsProvider')
+    throw new Error("useCredentials must be used within a CredentialsProvider")
   }
   return context
 }

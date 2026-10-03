@@ -6,6 +6,7 @@ import { useAccount } from "wagmi"
 import {
   Bot, User, Send, Mic, MicOff, Loader2, Wallet, ArrowUpRight, Coins,
   Boxes, LineChart, Link2, Copy, Check, CalendarClock, FileText, Rocket,
+  Paperclip, X, Image as ImageIcon,
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -14,6 +15,8 @@ import { useCredentials } from "@/contexts/CredentialsContext"
 import { OnboardingModal } from "@/components/onboarding-modal"
 import { TxActionButton, type PendingAction } from "@/components/ui/tx-action-button"
 import TokenListCard from "@/components/ui/token-list-card"
+import CandlestickChart from "@/components/ui/candlestick-chart"
+import { uploadFileToIPFS } from "@/lib/pinata"
 
 const EXPLORER = "https://explorer.testnet.soniclabs.com"
 
@@ -147,6 +150,23 @@ function ToolCard({ result }: { result: any }) {
       )
     case "tokenList":
       return <div className="mt-3 w-full max-w-xl"><TokenListCard tokens={result.tokens} /></div>
+    case "candlestick":
+      return <div className="mt-3 w-full max-w-2xl"><CandlestickChart data={result.data} symbol={result.symbol} /></div>
+    case "image":
+      return (
+        <div className="mt-3 w-full max-w-xl rounded-lg border border-gray-300 dark:border-gray-800 bg-white dark:bg-black p-4">
+          <div className="flex items-center gap-2 mb-3 text-sm font-medium">
+            <div className="w-7 h-7 rounded-full bg-gray-800 dark:bg-white text-white dark:text-black flex items-center justify-center"><ImageIcon className="w-4 h-4" /></div>
+            {result.title || "Image"}
+          </div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={result.imageBase64 ? `data:image/png;base64,${result.imageBase64}` : result.imageUrl}
+            alt={result.title || "generated image"}
+            className="w-full rounded-md border border-gray-200 dark:border-gray-800"
+          />
+        </div>
+      )
     case "market":
       return (
         <CardShell icon={<LineChart className="w-4 h-4" />} title={`${result.name} Market`}>
@@ -284,14 +304,17 @@ export default function AstraxChatPage() {
   const { address } = useAccount()
   const [isRecording, setIsRecording] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
+  const [files, setFiles] = useState<File[]>([])
+  const [uploading, setUploading] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const recognitionRef = useRef<any>(null)
 
   // Keep the latest signing context in a ref so each request sends fresh values.
   const ctxRef = useRef({ privateKey, signingMode, address })
   ctxRef.current = { privateKey, signingMode, address }
 
-  const { messages, input, handleInputChange, handleSubmit, status, setInput } = useChat({
+  const { messages, input, handleInputChange, handleSubmit, status, setInput, append } = useChat({
     api: "/api/agent",
     initialMessages: [{ id: "welcome", role: "assistant", content: WELCOME }],
     experimental_prepareRequestBody: ({ messages }) => ({
@@ -336,10 +359,39 @@ export default function AstraxChatPage() {
     rec.start(); setIsRecording(true)
   }
 
-  const onSubmit = (e: React.FormEvent) => {
+  const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!input.trim() || isLoading) return
+    if (isLoading || uploading) return
+    if (!input.trim() && files.length === 0) return
+
+    // If files are attached, upload them to IPFS first, then hand the links to the agent.
+    if (files.length > 0) {
+      setUploading(true)
+      try {
+        const links: string[] = []
+        for (const f of files) {
+          const { ipfsUrl } = await uploadFileToIPFS(f)
+          links.push(`${f.name}: ${ipfsUrl}`)
+        }
+        const base = input.trim() ? `${input.trim()}\n\n` : ""
+        const text = `${base}I attached file(s) stored on IPFS — please save them with storeAsset: ${links.join(" | ")}`
+        setInput("")
+        setFiles([])
+        append({ role: "user", content: text })
+      } catch {
+        alert("IPFS upload failed. Add NEXT_PUBLIC_PINATA_JWT to enable file uploads.")
+      } finally {
+        setUploading(false)
+      }
+      return
+    }
+
     handleSubmit(e)
+  }
+
+  const onPickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) setFiles((prev) => [...prev, ...Array.from(e.target.files!)])
+    if (fileInputRef.current) fileInputRef.current.value = ""
   }
 
   return (
@@ -393,26 +445,49 @@ export default function AstraxChatPage() {
 
       {/* Composer */}
       <div className="border-t border-gray-200 dark:border-gray-800 px-4 py-4">
+        {/* Attached file chips */}
+        {files.length > 0 && (
+          <div className="w-full mb-2 flex flex-wrap gap-2">
+            {files.map((f, i) => (
+              <span key={i} className="inline-flex items-center gap-2 text-xs rounded-md border border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-900 px-2 py-1">
+                <FileText className="w-3.5 h-3.5" /> {f.name}
+                <button type="button" onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))} className="text-gray-500 hover:text-black dark:hover:text-white">
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <form onSubmit={onSubmit} className="w-full relative">
           <Input
             value={input}
             onChange={handleInputChange}
-            placeholder="Message Astrax…"
-            disabled={isLoading}
-            className="w-full bg-gray-100 dark:bg-gray-900 border-gray-300 dark:border-gray-700 pr-20 py-5 text-base rounded-lg"
+            placeholder={uploading ? "Uploading to IPFS…" : "Message Astrax…"}
+            disabled={isLoading || uploading}
+            className="w-full bg-gray-100 dark:bg-gray-900 border-gray-300 dark:border-gray-700 pr-28 py-5 text-base rounded-lg"
           />
+          <input ref={fileInputRef} type="file" multiple onChange={onPickFiles} className="hidden" accept="image/*,.pdf,.json,.txt,.doc,.docx" />
           <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
             <button
               type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isLoading || uploading}
+              className="p-2 rounded-md text-gray-500 hover:text-black dark:hover:text-white transition-colors"
+              title="Attach a file (stored on IPFS)"
+            >
+              <Paperclip className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
               onClick={toggleRecording}
-              disabled={isLoading}
+              disabled={isLoading || uploading}
               className={cn("p-2 rounded-md transition-colors", isRecording ? "text-red-500 bg-red-50 dark:bg-red-950 animate-pulse" : "text-gray-500 hover:text-black dark:hover:text-white")}
               title={isRecording ? "Stop recording" : "Voice input"}
             >
               {isRecording ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
             </button>
-            <Button type="submit" size="sm" disabled={isLoading || !input.trim()} className="bg-gray-800 dark:bg-white text-white dark:text-black hover:bg-gray-700 dark:hover:bg-gray-200">
-              <Send className="w-4 h-4" />
+            <Button type="submit" size="sm" disabled={isLoading || uploading || (!input.trim() && files.length === 0)} className="bg-gray-800 dark:bg-white text-white dark:text-black hover:bg-gray-700 dark:hover:bg-gray-200">
+              {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
             </Button>
           </div>
         </form>

@@ -4,6 +4,7 @@ import { useState } from "react"
 import {
   Sparkles, Wallet, Zap, ArrowRight, ArrowLeft, Check,
   Send, Rocket, Link2, CalendarClock, Boxes, X,
+  LineChart, GitBranch, Image as ImageIcon, FileUp,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -33,7 +34,10 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
               { icon: <Link2 className="w-4 h-4" />, label: "Payment links" },
               { icon: <CalendarClock className="w-4 h-4" />, label: "Schedule payments" },
               { icon: <Boxes className="w-4 h-4" />, label: "Explore the chain" },
-              { icon: <Zap className="w-4 h-4" />, label: "Market data" },
+              { icon: <LineChart className="w-4 h-4" />, label: "Price charts" },
+              { icon: <GitBranch className="w-4 h-4" />, label: "Workflow diagrams" },
+              { icon: <ImageIcon className="w-4 h-4" />, label: "Image generation" },
+              { icon: <FileUp className="w-4 h-4" />, label: "IPFS file storage" },
             ].map((f) => (
               <div key={f.label} className="flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-800 px-3 py-2">
                 <span className="text-gray-500 dark:text-gray-400">{f.icon}</span>
@@ -82,7 +86,8 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
             "Send 1 S to 0x1234…abcd",
             "Create a token MoonCoin MOON supply 1000000",
             "Make a payment link for 0.5 S",
-            "Show the latest blocks",
+            "Show the S price chart",
+            "Draw a workflow diagram for an ERC-20 token",
             "Schedule 2 S to 0x… in 10 minutes",
           ].map((ex) => (
             <div key={ex} className="rounded-lg bg-gray-100 dark:bg-gray-900 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 font-mono">

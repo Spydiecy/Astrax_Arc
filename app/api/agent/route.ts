@@ -49,7 +49,7 @@ function getModel() {
     const mistral = createMistral({ apiKey: process.env.MISTRAL_API_KEY })
     return mistral(process.env.ASTRAX_MODEL || "mistral-large-latest")
   }
-  const key = process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_KEY
+  const key = process.env.GOOGLE_GENERATIVE_AI_API_KEY
   if (key) {
     const google = createGoogleGenerativeAI({ apiKey: key })
     return google(process.env.ASTRAX_MODEL || "gemini-2.0-flash")
@@ -134,6 +134,10 @@ Guidance:
 - "send 1 ${NATIVE_SYMBOL} to 0x../alice" → sendPayment (token defaults to native ${NATIVE_SYMBOL})
 - "look up tx 0x.." → getTransaction ; "latest blocks" → getLatestBlocks ; "block 123" → getBlock
 - "list tokens" → listTokens ; "price/market" → getMarketData ; "activity for 0x.." → getAddressActivity
+- "price chart / candlestick / chart for ${NATIVE_SYMBOL}" → getPriceChart
+- "diagram / workflow / flowchart / visualize this contract" → generateDiagram (YOU write the Mermaid code)
+- "generate an image of … / draw …" → generateImage
+- When the user shares an IPFS link of an attached file, call storeAsset to save it
 - "create token MoonCoin MOON supply 1000000" → deployToken ; "deploy bytecode 0x.." → deployContract
 - "schedule 2 ${NATIVE_SYMBOL} to alice tomorrow at 5pm" → scheduleTransfer
 - "payment link for 0.5 ${NATIVE_SYMBOL}" → createPaymentLink
@@ -541,6 +545,69 @@ export async function POST(req: Request) {
         execute: async () => {
           if (!ownerAddress) return { error: "No wallet address available." }
           return { kind: "assetList", assets: await listAssets(ownerAddress) }
+        },
+      }),
+
+      // ── VISUALS / DATA ──────────────────────────────────────────────────────
+      getPriceChart: tool({
+        description: `Get an OHLC candlestick price chart for Sonic / ${NATIVE_SYMBOL} over a number of days.`,
+        parameters: z.object({ days: z.number().int().min(1).max(30).optional() }),
+        execute: async ({ days }) => {
+          try {
+            const d = days ?? 7
+            const res = await fetch(`https://api.coingecko.com/api/v3/coins/sonic-3/ohlc?vs_currency=usd&days=${d}`, {
+              headers: { accept: "application/json" },
+            })
+            if (!res.ok) return { error: "Price chart unavailable right now." }
+            const arr = (await res.json()) as number[][]
+            if (!Array.isArray(arr) || arr.length === 0) return { error: "No price data available." }
+            const data = arr.map(([timestamp, open, high, low, close]) => ({ timestamp, open, high, low, close, volume: 0 }))
+            return { kind: "candlestick", symbol: NATIVE_SYMBOL, days: d, data }
+          } catch {
+            return { error: "Price chart unavailable right now." }
+          }
+        },
+      }),
+
+      generateDiagram: tool({
+        description:
+          "Render a flowchart / workflow diagram as an image. YOU write valid Mermaid flowchart code (start with 'flowchart TD'). Perfect for smart-contract workflows, process flows, and architecture diagrams. Works without any API key.",
+        parameters: z.object({
+          title: z.string().optional(),
+          mermaid: z.string().describe("Valid Mermaid flowchart code, e.g. 'flowchart TD\\n A[Start] --> B[End]'"),
+        }),
+        execute: async ({ title, mermaid }) => {
+          try {
+            const encoded = Buffer.from(mermaid).toString("base64url")
+            const r = await fetch(`https://mermaid.ink/img/${encoded}`)
+            if (!r.ok) return { error: "Could not render the diagram. Check the Mermaid syntax." }
+            const imageBase64 = Buffer.from(await r.arrayBuffer()).toString("base64")
+            return { kind: "image", title: title || "Diagram", imageBase64, mermaid }
+          } catch {
+            return { error: "Could not render the diagram." }
+          }
+        },
+      }),
+
+      generateImage: tool({
+        description: "Generate an AI image/diagram from a text prompt using Gemini. Requires NEXT_PUBLIC_GEMINI_KEY; if unavailable, suggest generateDiagram instead.",
+        parameters: z.object({ prompt: z.string(), isContract: z.boolean().optional() }),
+        execute: async ({ prompt, isContract }) => {
+          if (!process.env.NEXT_PUBLIC_GEMINI_KEY) {
+            return { error: "Image generation needs NEXT_PUBLIC_GEMINI_KEY. Tip: the **generateDiagram** tool renders flowcharts without any key." }
+          }
+          try {
+            const res = await fetch(`${APP_URL}/api/generate-image`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ prompt, isSmartContractWorkflow: !!isContract, type: isContract ? "workflow" : "general" }),
+            })
+            const j = await res.json()
+            if (!res.ok || !j.imageBase64) return { error: j.error || "Image generation failed." }
+            return { kind: "image", title: "Generated image", imageBase64: j.imageBase64 }
+          } catch {
+            return { error: "Image generation failed." }
+          }
         },
       }),
 

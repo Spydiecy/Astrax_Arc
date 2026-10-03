@@ -2,10 +2,32 @@
 // (or the user) writes as source. Keep contracts SELF-CONTAINED (no imports) and
 // targeting the installed compiler (pragma ^0.8.x) — solc-js here has no import resolver.
 
+import fs from "fs"
+import path from "path"
+
 export interface Compiled {
   abi: any[]
   bytecode: string
   contractName: string
+}
+
+// Resolve imports (e.g. @openzeppelin/contracts/...) from node_modules.
+// solc calls this synchronously with fully-resolved paths.
+function resolveImport(importPath: string): { contents: string } | { error: string } {
+  try {
+    const candidates = [
+      path.join(process.cwd(), "node_modules", importPath),
+      path.join(process.cwd(), "node_modules", importPath.replace(/^@/, "@")),
+    ]
+    for (const c of candidates) {
+      if (fs.existsSync(c) && fs.statSync(c).isFile()) {
+        return { contents: fs.readFileSync(c, "utf8") }
+      }
+    }
+    return { error: `File not found: ${importPath}` }
+  } catch (e: any) {
+    return { error: e?.message || `Could not resolve ${importPath}` }
+  }
 }
 
 export async function compileSolidity(
@@ -29,12 +51,9 @@ export async function compileSolidity(
     },
   }
 
-  // Reject imports with a clear message (no resolver available).
-  const importCallback = (p: string) => ({ error: `Import "${p}" is not supported — write a self-contained contract.` })
-
   let out: any
   try {
-    out = JSON.parse(solc.compile(JSON.stringify(input), { import: importCallback }))
+    out = JSON.parse(solc.compile(JSON.stringify(input), { import: resolveImport }))
   } catch (e: any) {
     return { ok: false, error: `Compile failed: ${e?.message || "unknown error"}` }
   }

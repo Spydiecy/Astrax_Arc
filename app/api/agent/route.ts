@@ -147,7 +147,8 @@ Guidance:
 - When the user shares an IPFS link of an attached file, call storeAsset to save it
 - "create token MoonCoin MOON supply 1000000" → deployToken
 - "create an NFT / launch an NFT collection" → deployNFT
-- "write/generate a <X> contract and deploy it" → deployContract with self-contained Solidity (pragma ^0.8.0, no imports); "deploy bytecode 0x.." → deployContract with bytecode
+- "mint an NFT from <collection 0x..>" → mintNFT
+- "write/generate a <X> contract and deploy it" → deployContract with Solidity. You MAY use OpenZeppelin v5 imports (e.g. import "@openzeppelin/contracts/token/ERC20/ERC20.sol";) — they are resolved on the server. Use pragma ^0.8.20 for OZ v5, and remember OZ v5 Ownable needs an initialOwner. "deploy bytecode 0x.." → deployContract with bytecode
 - "schedule 2 ${NATIVE_SYMBOL} to alice tomorrow at 5pm" → scheduleTransfer
 - "payment link for 0.5 ${NATIVE_SYMBOL}" → createPaymentLink
 - "save alice as 0x.." → saveContact ; "who is alice" → resolveContact
@@ -525,6 +526,27 @@ export async function POST(req: Request) {
             return { kind: "deploy", what: "contract", name, contractAddress: receipt.contractAddress, hash, explorerUrl: explorerTx(hash) }
           } catch (e: any) {
             return { error: `Deploy failed: ${(e?.shortMessage || e?.message || "unknown error").slice(0, 160)}` }
+          }
+        },
+      }),
+
+      mintNFT: tool({
+        description: "Mint an NFT from a deployed AstraxNFT (ERC-721) collection. Give the collection contract address; mints to the user unless another address is specified.",
+        parameters: z.object({ contract: z.string().describe("NFT collection contract address"), to: z.string().optional() }),
+        execute: async ({ contract, to }) => {
+          if (!isAddress(contract)) return { error: "That is not a valid collection contract address." }
+          const recipient = to && isAddress(to) ? to : ownerAddress
+          if (!recipient || !isAddress(recipient)) return { error: "No recipient address available." }
+          if (signingMode === "wallet") {
+            if (!ownerAddress) return noSigner()
+            return { kind: "action", action: "mintNFT", contract, to: recipient, label: `Mint NFT → ${recipient.slice(0, 6)}…${recipient.slice(-4)}` }
+          }
+          if (!wallet) return noSigner()
+          try {
+            const hash = await wallet.client.writeContract({ address: contract as Hex, abi: ASTRAX_NFT_ABI, functionName: "mint", args: [recipient as Hex] })
+            return { kind: "transaction", status: "Submitted", action: "mint", hash, to: recipient, value: "1 NFT", explorerUrl: explorerTx(hash) }
+          } catch (e: any) {
+            return { error: `Mint failed: ${(e?.shortMessage || e?.message || "unknown error").slice(0, 160)}` }
           }
         },
       }),

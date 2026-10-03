@@ -149,7 +149,7 @@ function ToolCard({ result }: { result: any }) {
       )
     case "transaction":
       return (
-        <CardShell icon={<ArrowUpRight className="w-4 h-4" />} title={result.action === "send" ? "Payment Sent" : "Transaction"}>
+        <CardShell icon={<ArrowUpRight className="w-4 h-4" />} title={result.action === "send" ? "Payment Sent" : result.action === "mint" ? "NFT Minted" : "Transaction"}>
           <div className="flex items-center justify-between gap-3 text-sm py-1">
             <span className="text-gray-500 dark:text-gray-400">Hash</span>
             <span className="font-mono text-xs flex items-center gap-1">{short(result.hash)} <CopyBtn value={result.hash} /></span>

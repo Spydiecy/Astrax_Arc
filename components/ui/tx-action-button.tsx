@@ -14,9 +14,10 @@ import { ASTRAX_NFT_ABI, ASTRAX_NFT_BYTECODE } from "@/lib/erc721"
 import type { Hex } from "viem"
 
 export interface PendingAction {
-  action: "sendNative" | "sendToken" | "deployToken" | "deployNFT" | "deployContract"
+  action: "sendNative" | "sendToken" | "deployToken" | "deployNFT" | "deployContract" | "mintNFT"
   label: string
   to?: string
+  contract?: string
   valueWei?: string
   tokenAddress?: string
   amountWei?: string
@@ -71,6 +72,13 @@ export function TxActionButton({ action, onDone }: { action: PendingAction; onDo
           abi: ASTRAX_TOKEN_ABI,
           bytecode: ASTRAX_TOKEN_BYTECODE,
           args: [action.name as string, action.symbol as string, BigInt(action.supply || "0")],
+        })
+      } else if (action.action === "mintNFT") {
+        hash = await writeContractAsync({
+          address: action.contract as Hex,
+          abi: ASTRAX_NFT_ABI,
+          functionName: "mint",
+          args: [action.to as Hex],
         })
       } else if (action.action === "deployNFT") {
         if (!walletClient) throw new Error("Wallet not ready")

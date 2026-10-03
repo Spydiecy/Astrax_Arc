@@ -191,7 +191,14 @@ function ToolCard({ result }: { result: any }) {
     case "tokenList":
       return <div className="mt-3 w-full max-w-xl"><TokenListCard tokens={result.tokens} /></div>
     case "candlestick":
-      return <div className="mt-3 w-full max-w-2xl"><CandlestickChart data={result.data} symbol={result.symbol} /></div>
+      return (
+        <div className="mt-3 w-full max-w-2xl">
+          <CandlestickChart data={result.data} symbol={result.symbol} />
+          {result.indicative && (
+            <p className="mt-1 text-xs text-gray-500">Indicative series — {result.symbol} has no live Coinbase market, derived from spot price.</p>
+          )}
+        </div>
+      )
     case "image":
       return <ImageCard result={result} />
     case "market":

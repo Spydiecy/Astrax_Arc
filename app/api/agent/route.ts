@@ -26,6 +26,7 @@ import {
   ERC20_ABI,
 } from "@/lib/sonic"
 import { ASTRAX_TOKEN_ABI, ASTRAX_TOKEN_BYTECODE } from "@/lib/erc20"
+import { spotPriceUSD, dailyCandles, indicativeCandles } from "@/lib/prices"
 import {
   saveAddress,
   resolveName,
@@ -108,7 +109,11 @@ async function resolveRecipient(to: string): Promise<string | null> {
   return await resolveName(name)
 }
 
-async function sonicUsdPrice(): Promise<number | null> {
+// Native S price via Coinbase spot, with a CoinGecko fallback (S has no stable
+// Coinbase market on testnet).
+async function nativeUsdPrice(): Promise<number | null> {
+  const cb = await spotPriceUSD(NATIVE_SYMBOL)
+  if (cb != null) return cb
   try {
     const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=sonic-3&vs_currencies=usd", {
       headers: { accept: "application/json" },
@@ -192,7 +197,7 @@ export async function POST(req: Request) {
             if (!target || !isAddress(target)) return { error: "No valid address available." }
             const bal = await publicClient.getBalance({ address: target as Hex })
             const balance = formatEther(bal)
-            const price = await sonicUsdPrice()
+            const price = await nativeUsdPrice()
             return {
               kind: "balance",
               address: target,
@@ -314,26 +319,29 @@ export async function POST(req: Request) {
         description: `Get market data (price, market cap, volume) for Sonic / ${NATIVE_SYMBOL}.`,
         parameters: z.object({}),
         execute: async () => {
+          // Price from Coinbase spot; market cap / volume / 24h change from CoinGecko (best-effort).
+          const price = await nativeUsdPrice()
+          let marketCap: number | null = null
+          let volume24h: number | null = null
+          let change24h: number | null = null
+          let name = "Sonic"
           try {
             const res = await fetch(
               "https://api.coingecko.com/api/v3/coins/sonic-3?localization=false&tickers=false&community_data=false&developer_data=false",
               { headers: { accept: "application/json" } },
             )
-            if (!res.ok) return { error: "Market data unavailable right now." }
-            const j = await res.json()
-            const md = j.market_data
-            return {
-              kind: "market",
-              name: j.name,
-              symbol: (j.symbol || NATIVE_SYMBOL).toUpperCase(),
-              price: md?.current_price?.usd ?? null,
-              marketCap: md?.market_cap?.usd ?? null,
-              volume24h: md?.total_volume?.usd ?? null,
-              change24h: md?.price_change_percentage_24h ?? null,
+            if (res.ok) {
+              const j = await res.json()
+              name = j.name || name
+              marketCap = j.market_data?.market_cap?.usd ?? null
+              volume24h = j.market_data?.total_volume?.usd ?? null
+              change24h = j.market_data?.price_change_percentage_24h ?? null
             }
           } catch {
-            return { error: "Market data unavailable right now." }
+            /* best-effort */
           }
+          if (price == null && marketCap == null) return { error: "Market data unavailable right now." }
+          return { kind: "market", name, symbol: NATIVE_SYMBOL, price, marketCap, volume24h, change24h }
         },
       }),
 
@@ -550,22 +558,23 @@ export async function POST(req: Request) {
 
       // ── VISUALS / DATA ──────────────────────────────────────────────────────
       getPriceChart: tool({
-        description: `Get an OHLC candlestick price chart for Sonic / ${NATIVE_SYMBOL} over a number of days.`,
-        parameters: z.object({ days: z.number().int().min(1).max(30).optional() }),
-        execute: async ({ days }) => {
-          try {
-            const d = days ?? 7
-            const res = await fetch(`https://api.coingecko.com/api/v3/coins/sonic-3/ohlc?vs_currency=usd&days=${d}`, {
-              headers: { accept: "application/json" },
-            })
-            if (!res.ok) return { error: "Price chart unavailable right now." }
-            const arr = (await res.json()) as number[][]
-            if (!Array.isArray(arr) || arr.length === 0) return { error: "No price data available." }
-            const data = arr.map(([timestamp, open, high, low, close]) => ({ timestamp, open, high, low, close, volume: 0 }))
-            return { kind: "candlestick", symbol: NATIVE_SYMBOL, days: d, data }
-          } catch {
-            return { error: "Price chart unavailable right now." }
+        description: `Get an OHLC candlestick price chart for a token over a number of days. Defaults to ${NATIVE_SYMBOL}. Prices come from Coinbase.`,
+        parameters: z.object({
+          symbol: z.string().optional().describe(`Token symbol, e.g. ${NATIVE_SYMBOL}, USDT. Defaults to ${NATIVE_SYMBOL}.`),
+          days: z.number().int().min(2).max(30).optional(),
+        }),
+        execute: async ({ symbol, days }) => {
+          const sym = (symbol || NATIVE_SYMBOL).toUpperCase()
+          const d = days ?? 7
+          // Prefer a real Coinbase market; otherwise build an indicative series from spot.
+          let data = await dailyCandles(sym, d)
+          let indicative = false
+          if (!data) {
+            data = await indicativeCandles(sym, d)
+            indicative = true
           }
+          if (!data || data.length === 0) return { error: `No price data available for ${sym}.` }
+          return { kind: "candlestick", symbol: sym, days: d, data, indicative }
         },
       }),
 

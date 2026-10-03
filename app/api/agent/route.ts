@@ -29,6 +29,7 @@ import { ASTRAX_TOKEN_ABI, ASTRAX_TOKEN_BYTECODE } from "@/lib/erc20"
 import { ASTRAX_NFT_ABI, ASTRAX_NFT_BYTECODE } from "@/lib/erc721"
 import { compileSolidity } from "@/lib/solc"
 import { spotPriceUSD, dailyCandles, indicativeCandles } from "@/lib/prices"
+import { uploadJSONToIPFS, isPinataConfigured } from "@/lib/pinata"
 import {
   saveAddress,
   resolveName,
@@ -144,7 +145,7 @@ Guidance:
 - "price chart / candlestick / chart for ${NATIVE_SYMBOL}" → getPriceChart
 - "diagram / workflow / flowchart / visualize this contract" → generateDiagram (YOU write the Mermaid code)
 - "generate an image of … / draw …" → generateImage
-- When the user shares an IPFS link of an attached file, call storeAsset to save it
+- When the user attaches a file you'll see its IPFS URL in the message. If they're creating an NFT, pass that URL as the deployNFT "image" argument; otherwise save it with storeAsset. NFT images are optional.
 - "create token MoonCoin MOON supply 1000000" → deployToken
 - "create an NFT / launch an NFT collection" → deployNFT
 - "mint an NFT from <collection 0x..>" → mintNFT
@@ -467,23 +468,42 @@ export async function POST(req: Request) {
       }),
 
       deployNFT: tool({
-        description: "Deploy a new ERC-721 NFT collection on Sonic Testnet (open mintable). Use for 'create an NFT' / 'launch an NFT collection'.",
+        description:
+          "Deploy a new ERC-721 NFT collection on Sonic Testnet (open mintable). The image is OPTIONAL — if the user attached an image (you'll see an IPFS URL in the message), pass it as `image` and it becomes the collection's artwork. Use for 'create an NFT' / 'launch an NFT collection'.",
         parameters: z.object({
           name: z.string(),
           symbol: z.string(),
-          baseURI: z.string().optional().describe("Base token URI, e.g. ipfs://… (optional)"),
+          image: z.string().optional().describe("IPFS/HTTP URL of the collection image (from an uploaded file). Optional."),
+          description: z.string().optional(),
+          baseURI: z.string().optional().describe("Explicit metadata URI (optional; usually leave empty and pass `image`)"),
         }),
-        execute: async ({ name, symbol, baseURI }) => {
-          const uri = baseURI || ""
+        execute: async ({ name, symbol, image, description, baseURI }) => {
+          // Build the collection metadata URI from an uploaded image if provided.
+          let uri = baseURI || ""
+          let imageUsed: string | undefined
+          if (image) {
+            imageUsed = image
+            if (isPinataConfigured()) {
+              try {
+                const { ipfsUrl } = await uploadJSONToIPFS({ name, description: description || name, image })
+                uri = ipfsUrl // tokenURI -> JSON { name, description, image }
+              } catch {
+                uri = image // fall back: point directly at the image
+              }
+            } else {
+              uri = image
+            }
+          }
+
           if (signingMode === "wallet") {
             if (!ownerAddress) return noSigner()
-            return { kind: "action", action: "deployNFT", name, symbol, baseURI: uri, label: `Deploy NFT ${name} (${symbol})` }
+            return { kind: "action", action: "deployNFT", name, symbol, baseURI: uri, image: imageUsed, metadataUri: uri, label: `Deploy NFT ${name} (${symbol})` }
           }
           if (!wallet) return noSigner()
           try {
             const hash = await wallet.client.deployContract({ abi: ASTRAX_NFT_ABI, bytecode: ASTRAX_NFT_BYTECODE, args: [name, symbol, uri] })
             const receipt = await publicClient.waitForTransactionReceipt({ hash })
-            return { kind: "deploy", what: "nft", name, symbol, contractAddress: receipt.contractAddress, hash, explorerUrl: explorerTx(hash) }
+            return { kind: "deploy", what: "nft", name, symbol, image: imageUsed, metadataUri: uri || undefined, contractAddress: receipt.contractAddress, hash, explorerUrl: explorerTx(hash) }
           } catch (e: any) {
             return { error: `Deploy failed: ${(e?.shortMessage || e?.message || "unknown error").slice(0, 160)}` }
           }

@@ -229,6 +229,10 @@ function ToolCard({ result }: { result: any }) {
         <CardShell icon={<Rocket className="w-4 h-4" />} title={result.what === "token" ? "Token Deployed" : result.what === "nft" ? "NFT Collection Deployed" : "Contract Deployed"}>
           {result.name && <Field label="Name">{result.name}{result.symbol ? ` (${result.symbol})` : ""}</Field>}
           {result.supply && <Field label="Supply">{result.supply}</Field>}
+          {result.image && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={result.image} alt="NFT artwork" className="my-2 max-h-40 rounded-md border border-gray-200 dark:border-gray-800" />
+          )}
           <div className="flex items-center justify-between gap-3 text-sm py-1">
             <span className="text-gray-500 dark:text-gray-400">Contract</span>
             <span className="font-mono text-xs flex items-center gap-1">{short(result.contractAddress)} <CopyBtn value={result.contractAddress || ""} /></span>
@@ -422,7 +426,7 @@ export default function AstraxChatPage() {
           files.filter((f) => f.type.startsWith("image/")).map(async (f) => ({ name: f.name, contentType: f.type, url: await fileToDataURL(f) })),
         )
         const base = input.trim() ? `${input.trim()}\n\n` : ""
-        const text = `${base}I attached file(s) stored on IPFS — please save them with storeAsset: ${links.join(" | ")}`
+        const text = `${base}I attached file(s) uploaded to IPFS: ${links.join(" | ")}. Use the IPFS URL as needed — e.g. as the \`image\` for deployNFT, or save it with storeAsset.`
         setInput("")
         setFiles([])
         append({ role: "user", content: text, experimental_attachments: previews })

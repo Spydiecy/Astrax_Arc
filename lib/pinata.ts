@@ -11,17 +11,22 @@ function createPinataClient() {
   })
 }
 
-export async function uploadJSONToIPFS(jsonMetadata: any): Promise<{ ipfsUrl: string; contentHash: string }> {
+export function isPinataConfigured(): boolean {
+  return Boolean(process.env.NEXT_PUBLIC_PINATA_JWT)
+}
+
+/** Upload a JSON object to IPFS; returns the CID (hash) and a gateway URL. */
+export async function uploadJSONToIPFS(jsonMetadata: any): Promise<{ ipfsUrl: string; cid: string; contentHash: string }> {
   const pinata = createPinataClient()
-  
+
   try {
-    const  IpfsHash  = await pinata.upload.json(jsonMetadata)
-    const contentHash = createHash("sha256")
-      .update(JSON.stringify(jsonMetadata))
-      .digest("hex")
-    
+    const res: any = await pinata.upload.json(jsonMetadata)
+    const cid: string = res?.cid ?? res?.IpfsHash ?? String(res)
+    const contentHash = createHash("sha256").update(JSON.stringify(jsonMetadata)).digest("hex")
+
     return {
-      ipfsUrl: `https://ipfs.io/ipfs/${IpfsHash}`,
+      ipfsUrl: `https://ipfs.io/ipfs/${cid}`,
+      cid,
       contentHash: `0x${contentHash}`,
     }
   } catch (error) {

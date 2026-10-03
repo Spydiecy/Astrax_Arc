@@ -86,7 +86,13 @@ contract AstraxNFT {
         transferFrom(from, to, id);
     }
 
+    /// @notice Shared collection metadata URI (points to JSON with name/description/image).
+    function tokenURI(uint256 id) external view returns (string memory) {
+        require(_owners[id] != address(0), "no token");
+        return baseURI;
+    }
+
     function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
-        return interfaceId == 0x80ac58cd || interfaceId == 0x01ffc9a7;
+        return interfaceId == 0x80ac58cd || interfaceId == 0x5b5e139f || interfaceId == 0x01ffc9a7;
     }
 }

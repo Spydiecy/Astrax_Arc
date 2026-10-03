@@ -1,0 +1,438 @@
+"use client"
+
+import { useChat } from "@ai-sdk/react"
+import { useEffect, useRef, useState } from "react"
+import { useAccount } from "wagmi"
+import {
+  Bot, User, Send, Mic, MicOff, Loader2, Wallet, ArrowUpRight, Coins,
+  Boxes, LineChart, Link2, Copy, Check, CalendarClock, FileText, Rocket,
+} from "lucide-react"
+import { Input } from "@/components/ui/input"
+import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
+import { useCredentials } from "@/contexts/CredentialsContext"
+import { AccessControlModal } from "@/components/access-control-modal"
+import TokenListCard from "@/components/ui/token-list-card"
+
+const EXPLORER = "https://explorer.testnet.soniclabs.com"
+
+// ── Minimal markdown renderer (bold / code / lists / breaks) ────────────────────
+function Markdown({ text }: { text: string }) {
+  const fmt = (line: string, key: string | number) => {
+    const parts = line.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)
+    return (
+      <span key={key}>
+        {parts.map((p, j) => {
+          if (p.startsWith("**") && p.endsWith("**"))
+            return <strong key={j} className="font-semibold">{p.slice(2, -2)}</strong>
+          if (p.startsWith("`") && p.endsWith("`"))
+            return <code key={j} className="font-mono text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-800">{p.slice(1, -1)}</code>
+          return <span key={j}>{p}</span>
+        })}
+      </span>
+    )
+  }
+  const lines = text.split("\n")
+  return (
+    <div className="space-y-1 leading-relaxed">
+      {lines.map((line, i) => {
+        if (line.trim() === "") return <div key={i} className="h-1" />
+        if (line.startsWith("- ") || line.startsWith("• "))
+          return <div key={i} className="flex gap-2"><span>•</span><span>{fmt(line.slice(2), i)}</span></div>
+        if (/^\d+\.\s/.test(line))
+          return <div key={i} className="pl-1">{fmt(line, i)}</div>
+        return <p key={i}>{fmt(line, i)}</p>
+      })}
+    </div>
+  )
+}
+
+function CopyBtn({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      onClick={async () => { await navigator.clipboard.writeText(value); setCopied(true); setTimeout(() => setCopied(false), 1500) }}
+      className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors"
+      title="Copy"
+    >
+      {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5 text-gray-500" />}
+    </button>
+  )
+}
+
+const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
+  <div className="flex items-center justify-between gap-3 text-sm py-1">
+    <span className="text-gray-500 dark:text-gray-400">{label}</span>
+    <span className="font-medium text-right break-all">{children}</span>
+  </div>
+)
+
+const CardShell = ({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) => (
+  <div className="mt-3 w-full max-w-xl rounded-lg border border-gray-300 dark:border-gray-800 bg-white dark:bg-black p-4">
+    <div className="flex items-center gap-2 mb-3 text-sm font-medium">
+      <div className="w-7 h-7 rounded-full bg-gray-800 dark:bg-white text-white dark:text-black flex items-center justify-center">{icon}</div>
+      {title}
+    </div>
+    {children}
+  </div>
+)
+
+const short = (a?: string) => (a && a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a || "")
+
+// ── Render a tool result into a card ────────────────────────────────────────────
+function ToolCard({ result }: { result: any }) {
+  if (!result || result.error) {
+    return result?.error ? (
+      <div className="mt-3 w-full max-w-xl rounded-lg border border-red-300 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 p-3 text-sm text-red-700 dark:text-red-300">
+        <Markdown text={result.error} />
+      </div>
+    ) : null
+  }
+
+  switch (result.kind) {
+    case "balance":
+      return (
+        <CardShell icon={<Wallet className="w-4 h-4" />} title="Balance">
+          <Field label="Address">{short(result.address)}</Field>
+          <Field label="Balance">{result.balance} {result.symbol}</Field>
+          {result.usdValue && <Field label="≈ USD">${result.usdValue}</Field>}
+        </CardShell>
+      )
+    case "transaction":
+      return (
+        <CardShell icon={<ArrowUpRight className="w-4 h-4" />} title={result.action === "send" ? "Payment Sent" : "Transaction"}>
+          <div className="flex items-center justify-between gap-3 text-sm py-1">
+            <span className="text-gray-500 dark:text-gray-400">Hash</span>
+            <span className="font-mono text-xs flex items-center gap-1">{short(result.hash)} <CopyBtn value={result.hash} /></span>
+          </div>
+          {result.status && <Field label="Status">{result.status}</Field>}
+          {result.from && <Field label="From">{short(result.from)}</Field>}
+          {result.to && <Field label="To">{short(result.to)}</Field>}
+          {result.value && <Field label="Value">{result.value}</Field>}
+          {result.blockNumber && <Field label="Block">{result.blockNumber}</Field>}
+          {result.gasUsed && <Field label="Gas Used">{result.gasUsed}</Field>}
+          <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
+            View on Sonic Explorer <ArrowUpRight className="w-3.5 h-3.5" />
+          </a>
+        </CardShell>
+      )
+    case "blocks":
+      return (
+        <CardShell icon={<Boxes className="w-4 h-4" />} title="Latest Blocks">
+          <div className="space-y-2">
+            {result.blocks.map((b: any) => (
+              <div key={b.blockNumber} className="rounded border border-gray-200 dark:border-gray-800 p-2 text-sm">
+                <div className="flex justify-between"><span className="font-medium">#{b.blockNumber}</span><span className="text-gray-500">{b.transactionCount} txns</span></div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">{b.timestamp}</div>
+              </div>
+            ))}
+          </div>
+        </CardShell>
+      )
+    case "block":
+      return (
+        <CardShell icon={<Boxes className="w-4 h-4" />} title={`Block #${result.blockNumber}`}>
+          <Field label="Hash">{short(result.hash)}</Field>
+          <Field label="Time">{result.timestamp}</Field>
+          <Field label="Transactions">{result.transactionCount}</Field>
+          <Field label="Gas Used">{result.gasUsed}</Field>
+          {result.miner && <Field label="Miner">{short(result.miner)}</Field>}
+        </CardShell>
+      )
+    case "tokenList":
+      return <div className="mt-3 w-full max-w-xl"><TokenListCard tokens={result.tokens} /></div>
+    case "market":
+      return (
+        <CardShell icon={<LineChart className="w-4 h-4" />} title={`${result.name} Market`}>
+          {result.price != null && <Field label="Price">${result.price}</Field>}
+          {result.change24h != null && <Field label="24h"><span className={result.change24h >= 0 ? "text-green-500" : "text-red-500"}>{result.change24h.toFixed(2)}%</span></Field>}
+          {result.marketCap != null && <Field label="Market Cap">${Number(result.marketCap).toLocaleString()}</Field>}
+          {result.volume24h != null && <Field label="24h Volume">${Number(result.volume24h).toLocaleString()}</Field>}
+        </CardShell>
+      )
+    case "activity":
+      return (
+        <CardShell icon={<LineChart className="w-4 h-4" />} title="Recent Activity">
+          <div className="space-y-2">
+            {result.transactions.length === 0 && <p className="text-sm text-gray-500">No recent transactions.</p>}
+            {result.transactions.map((t: any) => (
+              <a key={t.hash} href={`${EXPLORER}/tx/${t.hash}`} target="_blank" rel="noreferrer" className="block rounded border border-gray-200 dark:border-gray-800 p-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-900">
+                <div className="flex justify-between"><span className="font-mono text-xs">{short(t.hash)}</span><span className="text-gray-500">{t.value}</span></div>
+                <div className="text-xs text-gray-500">{short(t.from)} → {short(t.to)}</div>
+              </a>
+            ))}
+          </div>
+        </CardShell>
+      )
+    case "deploy":
+      return (
+        <CardShell icon={<Rocket className="w-4 h-4" />} title={result.what === "token" ? "Token Deployed" : "Contract Deployed"}>
+          {result.name && <Field label="Name">{result.name} ({result.symbol})</Field>}
+          {result.supply && <Field label="Supply">{result.supply}</Field>}
+          <div className="flex items-center justify-between gap-3 text-sm py-1">
+            <span className="text-gray-500 dark:text-gray-400">Contract</span>
+            <span className="font-mono text-xs flex items-center gap-1">{short(result.contractAddress)} <CopyBtn value={result.contractAddress || ""} /></span>
+          </div>
+          <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
+            View on Sonic Explorer <ArrowUpRight className="w-3.5 h-3.5" />
+          </a>
+        </CardShell>
+      )
+    case "schedule":
+      return (
+        <CardShell icon={<CalendarClock className="w-4 h-4" />} title="Transfer Scheduled">
+          <Field label="To">{short(result.to)}</Field>
+          <Field label="Amount">{result.amount}</Field>
+          <Field label="Runs At">{result.runAt}</Field>
+          {result.note && <p className="mt-2 text-xs text-gray-500">{result.note}</p>}
+        </CardShell>
+      )
+    case "scheduleList":
+      return (
+        <CardShell icon={<CalendarClock className="w-4 h-4" />} title="Scheduled Transfers">
+          {result.schedules.length === 0 ? <p className="text-sm text-gray-500">Nothing scheduled.</p> : result.schedules.map((s: any) => (
+            <div key={s.id} className="rounded border border-gray-200 dark:border-gray-800 p-2 text-sm mb-2">
+              <Field label="To">{short(s.to)}</Field>
+              <Field label="Amount">{s.amount} {s.token || "S"}</Field>
+              <Field label="Runs At">{new Date(s.runAt).toLocaleString()}</Field>
+              <Field label="Status">{s.status}</Field>
+            </div>
+          ))}
+        </CardShell>
+      )
+    case "paymentLink":
+      return (
+        <CardShell icon={<Link2 className="w-4 h-4" />} title="Payment Link">
+          {result.description && <Field label="For">{result.description}</Field>}
+          <Field label="Amount">{result.amount}</Field>
+          <div className="mt-2 flex items-center gap-2 rounded border border-gray-200 dark:border-gray-800 p-2">
+            <span className="font-mono text-xs flex-1 break-all">{result.url}</span>
+            <CopyBtn value={result.url} />
+          </div>
+          <a href={result.url} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
+            Open link <ArrowUpRight className="w-3.5 h-3.5" />
+          </a>
+        </CardShell>
+      )
+    case "contact":
+      return (
+        <CardShell icon={<User className="w-4 h-4" />} title={result.saved ? "Contact Saved" : "Contact"}>
+          <Field label="Name">{result.name}</Field>
+          <Field label="Address">{short(result.address)}</Field>
+        </CardShell>
+      )
+    case "contactList":
+      return (
+        <CardShell icon={<User className="w-4 h-4" />} title="Contacts">
+          {result.contacts.length === 0 ? <p className="text-sm text-gray-500">No contacts saved.</p> : result.contacts.map((c: any) => (
+            <Field key={c.name} label={c.name}>{short(c.address)}</Field>
+          ))}
+        </CardShell>
+      )
+    case "asset":
+      return (
+        <CardShell icon={<FileText className="w-4 h-4" />} title="Asset Stored">
+          <Field label="Description">{result.description}</Field>
+          <Field label="Link">{result.link}</Field>
+        </CardShell>
+      )
+    case "assetList":
+      return (
+        <CardShell icon={<FileText className="w-4 h-4" />} title="Your Assets">
+          {result.assets.length === 0 ? <p className="text-sm text-gray-500">No assets stored.</p> : result.assets.map((a: any, i: number) => (
+            <div key={i} className="rounded border border-gray-200 dark:border-gray-800 p-2 text-sm mb-2">
+              <div className="font-medium">{a.description}</div>
+              <div className="text-xs text-gray-500 break-all">{a.link}</div>
+            </div>
+          ))}
+        </CardShell>
+      )
+    case "swap":
+      return (
+        <CardShell icon={<Coins className="w-4 h-4" />} title="Swap">
+          <Field label="From">{result.amount} {result.fromCurrency}</Field>
+          <Field label="To">{result.toCurrency}</Field>
+          <Field label="Status">{result.status}</Field>
+          {result.note && <p className="mt-2 text-xs text-gray-500">{result.note}</p>}
+        </CardShell>
+      )
+    default:
+      return null
+  }
+}
+
+const WELCOME = `Hey, I'm **Astrax** 👋 — your AI agent for the **Sonic Testnet**.
+
+Try things like:
+- "What's my **S** balance?"
+- "Send **1 S** to \`0x…\`"
+- "Create a token **MoonCoin MOON** supply **1000000**"
+- "Show the **latest blocks**" or "**S** market data"
+- "Create a **payment link** for 0.5 S"
+- "Schedule **2 S** to \`0x…\` **in 10 minutes**"
+
+Add your wallet keys in **Wallet Credentials** (sidebar) so I can sign transactions for you.`
+
+export default function AstraxChatPage() {
+  const { publicKey, privateKey, hasAccess } = useCredentials()
+  const { isConnected } = useAccount()
+  const [showAccessModal, setShowAccessModal] = useState(true)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [isRecording, setIsRecording] = useState(false)
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const recognitionRef = useRef<any>(null)
+
+  const credsRef = useRef({ publicKey, privateKey })
+  credsRef.current = { publicKey, privateKey }
+
+  const { messages, input, handleInputChange, handleSubmit, status, append, setInput } = useChat({
+    api: "/api/agent",
+    initialMessages: [{ id: "welcome", role: "assistant", content: WELCOME }],
+    experimental_prepareRequestBody: ({ messages }) => ({
+      messages,
+      credentials: credsRef.current,
+      publicKey: credsRef.current.publicKey,
+    }),
+  })
+
+  const isLoading = status === "submitted" || status === "streaming"
+
+  useEffect(() => {
+    if (isConnected && hasAccess) setShowAccessModal(false)
+    else setShowAccessModal(true)
+  }, [isConnected, hasAccess])
+
+  useEffect(() => {
+    setSessionId(localStorage.getItem("sessionId"))
+    const onNew = () => setSessionId(localStorage.getItem("sessionId"))
+    window.addEventListener("newSessionCreated", onNew)
+    return () => window.removeEventListener("newSessionCreated", onNew)
+  }, [])
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }) }, [messages])
+
+  const toggleRecording = () => {
+    const SR = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition
+    if (!SR) { alert("Speech recognition isn't supported in this browser. Try Chrome, Edge, or Safari."); return }
+    if (isRecording) { recognitionRef.current?.stop(); setIsRecording(false); return }
+    const rec = new SR()
+    rec.lang = "en-US"; rec.continuous = false; rec.interimResults = true
+    rec.onresult = (e: any) => {
+      let t = ""
+      for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) t += e.results[i][0].transcript
+      if (t) setInput(input + t)
+    }
+    rec.onend = () => setIsRecording(false)
+    rec.onerror = () => setIsRecording(false)
+    recognitionRef.current = rec
+    rec.start(); setIsRecording(true)
+  }
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!input.trim() || isLoading) return
+    handleSubmit(e)
+  }
+
+  // ── Gating ────────────────────────────────────────────────────────────────
+  if (!hasAccess || showAccessModal) {
+    return (
+      <>
+        <AccessControlModal isOpen={showAccessModal} onAccessGranted={() => setShowAccessModal(false)} />
+        <div className="h-full flex items-center justify-center text-center">
+          <div>
+            <h1 className="text-2xl font-semibold mb-2">Astrax AI Assistant</h1>
+            <p className="text-gray-600 dark:text-gray-400">Connect your wallet to continue</p>
+          </div>
+        </div>
+      </>
+    )
+  }
+
+  if (!sessionId) {
+    return (
+      <div className="h-full flex items-center justify-center text-center">
+        <div>
+          <h1 className="text-2xl font-semibold mb-2">Astrax AI Assistant</h1>
+          <p className="text-gray-600 dark:text-gray-400">Create a session with the “New Session” button in the header to begin.</p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="h-full flex flex-col bg-white dark:bg-black text-black dark:text-white transition-colors duration-300">
+      <div className="flex-1 overflow-y-auto px-4 py-6">
+        <div className="max-w-3xl mx-auto space-y-5">
+          {messages.map((m) => {
+            const invocations = (m as any).toolInvocations ?? []
+            return (
+              <div key={m.id} className={cn("flex items-start gap-3", m.role === "user" ? "flex-row-reverse" : "")}>
+                <div className={cn(
+                  "w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0",
+                  m.role === "assistant" ? "bg-gray-200 dark:bg-gray-800" : "bg-gray-800 dark:bg-white text-white dark:text-black",
+                )}>
+                  {m.role === "assistant" ? <Bot className="w-4 h-4" /> : <User className="w-4 h-4" />}
+                </div>
+                <div className={cn("flex flex-col", m.role === "user" ? "items-end" : "items-start", "max-w-[85%]")}>
+                  {m.content && (
+                    <div className={cn(
+                      "rounded-lg p-3.5 border text-sm",
+                      m.role === "user"
+                        ? "bg-gray-800 dark:bg-white text-white dark:text-black border-transparent"
+                        : "bg-gray-100 dark:bg-gray-900/50 border-gray-300 dark:border-gray-800",
+                    )}>
+                      <Markdown text={m.content} />
+                    </div>
+                  )}
+                  {invocations.map((inv: any) =>
+                    inv.state === "result" ? <ToolCard key={inv.toolCallId} result={inv.result} /> : null,
+                  )}
+                </div>
+              </div>
+            )
+          })}
+
+          {isLoading && messages[messages.length - 1]?.role === "user" && (
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-gray-800 flex items-center justify-center">
+                <Bot className="w-4 h-4" />
+              </div>
+              <div className="rounded-lg p-3.5 border border-gray-300 dark:border-gray-800 bg-gray-100 dark:bg-gray-900/50 flex items-center gap-2 text-sm text-gray-500">
+                <Loader2 className="w-4 h-4 animate-spin" /> Thinking…
+              </div>
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+      </div>
+
+      {/* Composer */}
+      <div className="border-t border-gray-200 dark:border-gray-800 px-4 py-4">
+        <form onSubmit={onSubmit} className="max-w-3xl mx-auto relative">
+          <Input
+            value={input}
+            onChange={handleInputChange}
+            placeholder="Message Astrax…"
+            disabled={isLoading}
+            className="w-full bg-gray-100 dark:bg-gray-900 border-gray-300 dark:border-gray-700 pr-20 py-5 text-base rounded-lg"
+          />
+          <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
+            <button
+              type="button"
+              onClick={toggleRecording}
+              disabled={isLoading}
+              className={cn("p-2 rounded-md transition-colors", isRecording ? "text-red-500 bg-red-50 dark:bg-red-950 animate-pulse" : "text-gray-500 hover:text-black dark:hover:text-white")}
+              title={isRecording ? "Stop recording" : "Voice input"}
+            >
+              {isRecording ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+            </button>
+            <Button type="submit" size="sm" disabled={isLoading || !input.trim()} className="bg-gray-800 dark:bg-white text-white dark:text-black hover:bg-gray-700 dark:hover:bg-gray-200">
+              <Send className="w-4 h-4" />
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}

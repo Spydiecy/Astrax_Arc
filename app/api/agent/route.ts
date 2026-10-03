@@ -26,6 +26,8 @@ import {
   ERC20_ABI,
 } from "@/lib/sonic"
 import { ASTRAX_TOKEN_ABI, ASTRAX_TOKEN_BYTECODE } from "@/lib/erc20"
+import { ASTRAX_NFT_ABI, ASTRAX_NFT_BYTECODE } from "@/lib/erc721"
+import { compileSolidity } from "@/lib/solc"
 import { spotPriceUSD, dailyCandles, indicativeCandles } from "@/lib/prices"
 import {
   saveAddress,
@@ -143,7 +145,9 @@ Guidance:
 - "diagram / workflow / flowchart / visualize this contract" → generateDiagram (YOU write the Mermaid code)
 - "generate an image of … / draw …" → generateImage
 - When the user shares an IPFS link of an attached file, call storeAsset to save it
-- "create token MoonCoin MOON supply 1000000" → deployToken ; "deploy bytecode 0x.." → deployContract
+- "create token MoonCoin MOON supply 1000000" → deployToken
+- "create an NFT / launch an NFT collection" → deployNFT
+- "write/generate a <X> contract and deploy it" → deployContract with self-contained Solidity (pragma ^0.8.0, no imports); "deploy bytecode 0x.." → deployContract with bytecode
 - "schedule 2 ${NATIVE_SYMBOL} to alice tomorrow at 5pm" → scheduleTransfer
 - "payment link for 0.5 ${NATIVE_SYMBOL}" → createPaymentLink
 - "save alice as 0x.." → saveContact ; "who is alice" → resolveContact
@@ -461,20 +465,64 @@ export async function POST(req: Request) {
         },
       }),
 
-      deployContract: tool({
-        description: "Deploy a contract from raw compiled creation bytecode (0x...).",
-        parameters: z.object({ bytecode: z.string() }),
-        execute: async ({ bytecode }) => {
-          const bc = (bytecode.startsWith("0x") ? bytecode : `0x${bytecode}`) as Hex
+      deployNFT: tool({
+        description: "Deploy a new ERC-721 NFT collection on Sonic Testnet (open mintable). Use for 'create an NFT' / 'launch an NFT collection'.",
+        parameters: z.object({
+          name: z.string(),
+          symbol: z.string(),
+          baseURI: z.string().optional().describe("Base token URI, e.g. ipfs://… (optional)"),
+        }),
+        execute: async ({ name, symbol, baseURI }) => {
+          const uri = baseURI || ""
           if (signingMode === "wallet") {
             if (!ownerAddress) return noSigner()
-            return { kind: "action", action: "deployContract", bytecode: bc, label: "Deploy contract" }
+            return { kind: "action", action: "deployNFT", name, symbol, baseURI: uri, label: `Deploy NFT ${name} (${symbol})` }
           }
           if (!wallet) return noSigner()
           try {
-            const hash = await wallet.client.deployContract({ abi: [], bytecode: bc })
+            const hash = await wallet.client.deployContract({ abi: ASTRAX_NFT_ABI, bytecode: ASTRAX_NFT_BYTECODE, args: [name, symbol, uri] })
             const receipt = await publicClient.waitForTransactionReceipt({ hash })
-            return { kind: "deploy", what: "contract", contractAddress: receipt.contractAddress, hash, explorerUrl: explorerTx(hash) }
+            return { kind: "deploy", what: "nft", name, symbol, contractAddress: receipt.contractAddress, hash, explorerUrl: explorerTx(hash) }
+          } catch (e: any) {
+            return { error: `Deploy failed: ${(e?.shortMessage || e?.message || "unknown error").slice(0, 160)}` }
+          }
+        },
+      }),
+
+      deployContract: tool({
+        description:
+          "Deploy a smart contract. Provide EITHER `solidity` source (compiled on the server) OR precompiled `bytecode`. For generated contracts, write SELF-CONTAINED Solidity (no imports / no OpenZeppelin) with `pragma solidity ^0.8.0;`. Pass constructorArgs if the constructor needs them.",
+        parameters: z.object({
+          solidity: z.string().optional().describe("Self-contained Solidity source"),
+          bytecode: z.string().optional().describe("0x creation bytecode (if already compiled)"),
+          contractName: z.string().optional(),
+          constructorArgs: z.array(z.string()).optional(),
+        }),
+        execute: async ({ solidity, bytecode, contractName, constructorArgs }) => {
+          let bc: Hex | undefined
+          let abi: any[] = []
+          let name = contractName
+          if (solidity) {
+            const compiled = await compileSolidity(solidity, contractName)
+            if (!compiled.ok) return { error: `Compile error:\n${compiled.error}` }
+            bc = compiled.result.bytecode as Hex
+            abi = compiled.result.abi
+            name = compiled.result.contractName
+          } else if (bytecode) {
+            bc = (bytecode.startsWith("0x") ? bytecode : `0x${bytecode}`) as Hex
+          } else {
+            return { error: "Provide either `solidity` source or `bytecode`." }
+          }
+          const args = constructorArgs ?? []
+          if (signingMode === "wallet") {
+            if (!ownerAddress) return noSigner()
+            return { kind: "action", action: "deployContract", bytecode: bc, abi, constructorArgs: args, name: name || "Contract", label: `Deploy ${name || "contract"}` }
+          }
+          if (!wallet) return noSigner()
+          try {
+            const hash = await wallet.client.deployContract({ abi: (abi as any), bytecode: bc, args: args.length ? (args as any) : undefined })
+            const receipt = await publicClient.waitForTransactionReceipt({ hash })
+            return { kind: "deploy", what: "contract", name, contractAddress: receipt.contractAddress, hash, explorerUrl: explorerTx(hash) }
           } catch (e: any) {
             return { error: `Deploy failed: ${(e?.shortMessage || e?.message || "unknown error").slice(0, 160)}` }
           }

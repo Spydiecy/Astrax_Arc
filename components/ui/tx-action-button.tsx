@@ -8,12 +8,13 @@ import {
   useWaitForTransactionReceipt,
 } from "wagmi"
 import { Loader2, Zap, CheckCircle2, ArrowUpRight } from "lucide-react"
-import { ERC20_ABI, EXPLORER_URL, explorerTx } from "@/lib/sonic"
+import { ERC20_ABI, explorerTx } from "@/lib/sonic"
 import { ASTRAX_TOKEN_ABI, ASTRAX_TOKEN_BYTECODE } from "@/lib/erc20"
+import { ASTRAX_NFT_ABI, ASTRAX_NFT_BYTECODE } from "@/lib/erc721"
 import type { Hex } from "viem"
 
 export interface PendingAction {
-  action: "sendNative" | "sendToken" | "deployToken" | "deployContract"
+  action: "sendNative" | "sendToken" | "deployToken" | "deployNFT" | "deployContract"
   label: string
   to?: string
   valueWei?: string
@@ -23,7 +24,10 @@ export interface PendingAction {
   amount?: string
   name?: string
   supply?: string
+  baseURI?: string
   bytecode?: string
+  abi?: any[]
+  constructorArgs?: string[]
 }
 
 const short = (a?: string) => (a && a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a || "")
@@ -68,9 +72,17 @@ export function TxActionButton({ action, onDone }: { action: PendingAction; onDo
           bytecode: ASTRAX_TOKEN_BYTECODE,
           args: [action.name as string, action.symbol as string, BigInt(action.supply || "0")],
         })
+      } else if (action.action === "deployNFT") {
+        if (!walletClient) throw new Error("Wallet not ready")
+        hash = await walletClient.deployContract({
+          abi: ASTRAX_NFT_ABI,
+          bytecode: ASTRAX_NFT_BYTECODE,
+          args: [action.name as string, action.symbol as string, action.baseURI || ""],
+        })
       } else {
         if (!walletClient) throw new Error("Wallet not ready")
-        hash = await walletClient.deployContract({ abi: [], bytecode: action.bytecode as Hex })
+        const args = action.constructorArgs && action.constructorArgs.length ? action.constructorArgs : undefined
+        hash = await walletClient.deployContract({ abi: (action.abi as any) ?? [], bytecode: action.bytecode as Hex, args: args as any })
       }
       setTxHash(hash)
       setPhase("mining")

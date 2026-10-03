@@ -226,8 +226,8 @@ function ToolCard({ result }: { result: any }) {
       )
     case "deploy":
       return (
-        <CardShell icon={<Rocket className="w-4 h-4" />} title={result.what === "token" ? "Token Deployed" : "Contract Deployed"}>
-          {result.name && <Field label="Name">{result.name} ({result.symbol})</Field>}
+        <CardShell icon={<Rocket className="w-4 h-4" />} title={result.what === "token" ? "Token Deployed" : result.what === "nft" ? "NFT Collection Deployed" : "Contract Deployed"}>
+          {result.name && <Field label="Name">{result.name}{result.symbol ? ` (${result.symbol})` : ""}</Field>}
           {result.supply && <Field label="Supply">{result.supply}</Field>}
           <div className="flex items-center justify-between gap-3 text-sm py-1">
             <span className="text-gray-500 dark:text-gray-400">Contract</span>

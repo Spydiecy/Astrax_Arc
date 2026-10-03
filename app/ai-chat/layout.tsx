@@ -4,6 +4,7 @@ import { useState, useEffect } from "react"
 import { DashboardSidebar } from "@/components/dashboard/sidebar"
 import { CustomConnectButton } from "@/components/ui/connect-wallet-button"
 import { ThemeToggle } from "@/components/ui/theme-provider"
+import { SchedulePoller } from "@/components/schedule-poller"
 import { HelpCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -23,6 +24,7 @@ export default function AiChatLayout({
 
   return (
     <div className="h-screen bg-white dark:bg-black text-black dark:text-white flex overflow-hidden transition-colors duration-300">
+      <SchedulePoller />
       {/* Sidebar */}
       <DashboardSidebar open={sidebarOpen} setOpen={setSidebarOpen} />
 

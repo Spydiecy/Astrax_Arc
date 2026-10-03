@@ -17,6 +17,8 @@ import { TxActionButton, type PendingAction } from "@/components/ui/tx-action-bu
 import TokenListCard from "@/components/ui/token-list-card"
 import CandlestickChart from "@/components/ui/candlestick-chart"
 import { uploadFileToIPFS } from "@/lib/pinata"
+import { getCurrentId, newChat, getMessages, saveMessages } from "@/lib/chat-history"
+import type { Message } from "@ai-sdk/react"
 
 const EXPLORER = "https://explorer.testnet.soniclabs.com"
 
@@ -247,21 +249,29 @@ function ToolCard({ result }: { result: any }) {
         <CardShell icon={<CalendarClock className="w-4 h-4" />} title="Transfer Scheduled">
           <Field label="To">{short(result.to)}</Field>
           <Field label="Amount">{result.amount}</Field>
-          <Field label="Runs At">{result.runAt}</Field>
+          <Field label="First run">{result.runAt}</Field>
+          {result.recurrence && result.recurrence !== "once" && <Field label="Repeats">{result.recurrence}</Field>}
           {result.note && <p className="mt-2 text-xs text-gray-500">{result.note}</p>}
         </CardShell>
       )
     case "scheduleList":
       return (
-        <CardShell icon={<CalendarClock className="w-4 h-4" />} title="Scheduled Transfers">
+        <CardShell icon={<CalendarClock className="w-4 h-4" />} title="Scheduled Payments">
           {result.schedules.length === 0 ? <p className="text-sm text-gray-500">Nothing scheduled.</p> : result.schedules.map((s: any) => (
             <div key={s.id} className="rounded border border-gray-200 dark:border-gray-800 p-2 text-sm mb-2">
-              <Field label="To">{short(s.to)}</Field>
-              <Field label="Amount">{s.amount} {s.token || "S"}</Field>
-              <Field label="Runs At">{new Date(s.runAt).toLocaleString()}</Field>
-              <Field label="Status">{s.status}</Field>
+              <div className="flex items-center justify-between">
+                <span className="font-medium">{s.amount}</span>
+                <span className="text-xs text-gray-500">{s.status}{s.recurrence && s.recurrence !== "once" ? ` · ${s.recurrence}` : ""}</span>
+              </div>
+              <div className="text-xs text-gray-500">To {short(s.to)} · {s.runAt}</div>
             </div>
           ))}
+        </CardShell>
+      )
+    case "scheduleCancelled":
+      return (
+        <CardShell icon={<CalendarClock className="w-4 h-4" />} title="Schedule Cancelled">
+          <Field label="ID">{result.id}</Field>
         </CardShell>
       )
     case "paymentLink":
@@ -346,7 +356,27 @@ const SUGGESTIONS = [
   { icon: <Boxes className="w-3.5 h-3.5" />, label: "Latest blocks", prompt: "Show me the latest blocks on Sonic" },
 ]
 
+// Outer manager: owns the active chat id and swaps the keyed session on open.
 export default function AstraxChatPage() {
+  const [chatId, setChatId] = useState<string | null>(null)
+
+  useEffect(() => {
+    let id = getCurrentId()
+    if (!id) id = newChat()
+    setChatId(id)
+    const onOpen = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (detail?.id) setChatId(detail.id)
+    }
+    window.addEventListener("astrax:chat-open", onOpen)
+    return () => window.removeEventListener("astrax:chat-open", onOpen)
+  }, [])
+
+  if (!chatId) return null
+  return <ChatSession key={chatId} chatId={chatId} />
+}
+
+function ChatSession({ chatId }: { chatId: string }) {
   const { privateKey, signingMode } = useCredentials()
   const { address } = useAccount()
   const [isRecording, setIsRecording] = useState(false)
@@ -361,9 +391,14 @@ export default function AstraxChatPage() {
   const ctxRef = useRef({ privateKey, signingMode, address })
   ctxRef.current = { privateKey, signingMode, address }
 
+  const stored = getMessages(chatId)
+  const initialMessages: Message[] =
+    stored.length > 0 ? (stored as unknown as Message[]) : [{ id: "welcome", role: "assistant", content: WELCOME }]
+
   const { messages, input, handleInputChange, handleSubmit, status, setInput, append } = useChat({
     api: "/api/agent",
-    initialMessages: [{ id: "welcome", role: "assistant", content: WELCOME }],
+    id: chatId,
+    initialMessages,
     experimental_prepareRequestBody: ({ messages }) => ({
       // Keep the model text-only (strip image attachments used purely for display).
       messages: messages.map((m: any) => ({ id: m.id, role: m.role, content: m.content, toolInvocations: m.toolInvocations })),
@@ -389,6 +424,11 @@ export default function AstraxChatPage() {
   }
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }) }, [messages])
+
+  // Persist the conversation to the browser once a turn settles.
+  useEffect(() => {
+    if (status === "ready" || status === "error") saveMessages(chatId, messages as any)
+  }, [status, messages, chatId])
 
   const toggleRecording = () => {
     const SR = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition

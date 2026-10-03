@@ -30,17 +30,9 @@ import { ASTRAX_NFT_ABI, ASTRAX_NFT_BYTECODE } from "@/lib/erc721"
 import { compileSolidity } from "@/lib/solc"
 import { spotPriceUSD, dailyCandles, indicativeCandles } from "@/lib/prices"
 import { uploadJSONToIPFS, isPinataConfigured } from "@/lib/pinata"
-import {
-  saveAddress,
-  resolveName,
-  listAddresses,
-  addAsset,
-  listAssets,
-  addSchedule,
-  updateSchedule,
-  listSchedules,
-  type ScheduledTransfer,
-} from "@/lib/store"
+import { saveAddress, resolveName, listAddresses, addAsset, listAssets } from "@/lib/store"
+import { insertSchedule, listSchedulesByOwner, cancelSchedule as dbCancelSchedule } from "@/lib/db"
+import { encryptSecret } from "@/lib/crypto"
 
 export const runtime = "nodejs"
 export const maxDuration = 60
@@ -73,6 +65,26 @@ function makeWallet(privateKey?: string) {
   } catch {
     return null
   }
+}
+
+// Map a recurrence word/phrase to an interval in seconds (0 = one-shot).
+function parseEvery(every?: string): number {
+  if (!every) return 0
+  const s = every.trim().toLowerCase()
+  if (/(^|\b)(once|one[-\s]?time|no)\b/.test(s)) return 0
+  if (s.includes("hour")) return 3600
+  if (s.includes("day") || s.includes("daily")) return 86400
+  if (s.includes("week")) return 604800
+  if (s.includes("month")) return 2592000 // ~30 days
+  if (s.includes("year")) return 31536000
+  const m = s.match(/(\d+)\s*(second|minute|hour|day|week|month)/)
+  if (m) {
+    const n = parseInt(m[1], 10)
+    const unit = m[2]
+    const base = unit === "second" ? 1 : unit === "minute" ? 60 : unit === "hour" ? 3600 : unit === "day" ? 86400 : unit === "week" ? 604800 : 2592000
+    return n * base
+  }
+  return 0
 }
 
 function parseWhen(when: string): Date | null {
@@ -150,7 +162,9 @@ Guidance:
 - "create an NFT / launch an NFT collection" → deployNFT
 - "mint an NFT from <collection 0x..>" → mintNFT
 - "write/generate a <X> contract and deploy it" → deployContract with Solidity. You MAY use OpenZeppelin v5 imports (e.g. import "@openzeppelin/contracts/token/ERC20/ERC20.sol";) — they are resolved on the server. Use pragma ^0.8.20 for OZ v5, and remember OZ v5 Ownable needs an initialOwner. "deploy bytecode 0x.." → deployContract with bytecode
-- "schedule 2 ${NATIVE_SYMBOL} to alice tomorrow at 5pm" → scheduleTransfer
+- "schedule 2 ${NATIVE_SYMBOL} to alice tomorrow at 5pm" → scheduleTransfer (one-time)
+- "pay alice 500 ${NATIVE_SYMBOL} every month for a year / salary" → scheduleTransfer with every:"monthly", occurrences:12
+- "show my scheduled payments" → listSchedules ; "cancel schedule <id>" → cancelSchedule
 - "payment link for 0.5 ${NATIVE_SYMBOL}" → createPaymentLink
 - "save alice as 0x.." → saveContact ; "who is alice" → resolveContact
 - "store asset <link>" → storeAsset ; "my assets" → listAssets
@@ -572,9 +586,16 @@ export async function POST(req: Request) {
       }),
 
       scheduleTransfer: tool({
-        description: `Schedule a future transfer. Requires Autonomous (private key) signing mode. Accepts "in 10 minutes", "tomorrow at 5pm", or an ISO date.`,
-        parameters: z.object({ to: z.string(), amount: z.string(), when: z.string(), token: z.string().optional() }),
-        execute: async ({ to, amount, when, token }) => {
+        description: `Schedule a one-time or RECURRING transfer (e.g. salary). Requires Autonomous (private key) signing mode. "when" accepts "in 10 minutes", "tomorrow at 5pm", or an ISO date. "every" makes it recurring: daily/weekly/monthly or "2 weeks"; "occurrences" is how many times (default 1 for one-time, or e.g. 12 for a year of monthly).`,
+        parameters: z.object({
+          to: z.string(),
+          amount: z.string(),
+          when: z.string().describe('First run time, e.g. "tomorrow 9am"'),
+          token: z.string().optional(),
+          every: z.string().optional().describe('Recurrence: daily / weekly / monthly / "2 weeks". Omit for one-time.'),
+          occurrences: z.number().int().min(1).max(120).optional().describe("Number of runs (default 1)"),
+        }),
+        execute: async ({ to, amount, when, token, every, occurrences }) => {
           if (signingMode !== "auto" || !wallet) {
             return { error: "Scheduling needs **Autonomous** signing (a private key) so Astrax can send it later without you present. Switch to Autonomous in the sidebar **Signing** panel." }
           }
@@ -582,39 +603,61 @@ export async function POST(req: Request) {
           if (!runAt) return { error: `Could not understand the time "${when}". Try "in 10 minutes" or "2026-01-01 17:00".` }
           const recipient = await resolveRecipient(to)
           if (!recipient) return { error: `Could not resolve recipient "${to}".` }
+          const intervalSecs = parseEvery(every)
+          const remaining = occurrences ?? 1
           const id = `sch_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
-          await addSchedule({ id, to: recipient, amount, token, owner: wallet.account.address, runAt: runAt.toISOString(), status: "pending" } as ScheduledTransfer)
-          const delay = runAt.getTime() - Date.now()
-          if (delay > 0 && delay < 1000 * 60 * 60 * 24) {
-            setTimeout(async () => {
-              try {
-                const isNative = !token || token.toUpperCase() === NATIVE_SYMBOL
-                let hash: Hex
-                if (isNative) {
-                  hash = await wallet.client.sendTransaction({ to: recipient as Hex, value: parseEther(amount) })
-                } else {
-                  const info = findToken(token!)
-                  const tokenAddr = (info?.address && isAddress(info.address) ? info.address : token!) as Hex
-                  const decimals = info?.decimals ?? Number(await publicClient.readContract({ address: tokenAddr, abi: ERC20_ABI, functionName: "decimals" }))
-                  hash = await wallet.client.writeContract({ address: tokenAddr, abi: ERC20_ABI, functionName: "transfer", args: [recipient as Hex, parseUnits(amount, decimals)] })
-                }
-                await updateSchedule(id, { status: "sent", txHash: hash })
-              } catch (e: any) {
-                await updateSchedule(id, { status: "failed", note: e?.shortMessage || e?.message })
-              }
-            }, delay)
+          // Store the key encrypted so the cron worker can sign when due.
+          insertSchedule({
+            id,
+            owner: wallet.account.address,
+            recipient,
+            amount,
+            token: token || "",
+            next_run: runAt.getTime(),
+            interval_secs: intervalSecs,
+            remaining,
+            enc_key: encryptSecret(privateKey as string),
+          })
+          const recurrenceLabel = intervalSecs ? `every ${every} × ${remaining}` : "once"
+          return {
+            kind: "schedule",
+            id,
+            to: recipient,
+            amount: `${amount} ${token || NATIVE_SYMBOL}`,
+            runAt: runAt.toLocaleString(),
+            recurrence: recurrenceLabel,
+            note: "Astrax stores your key encrypted so it can send this on time, even if you close the app (testnet).",
           }
-          return { kind: "schedule", id, to: recipient, amount: `${amount} ${token || NATIVE_SYMBOL}`, runAt: runAt.toLocaleString(), note: delay >= 1000 * 60 * 60 * 24 ? "Scheduled far ahead — keep the server running at execution time (or wire a cron/queue for production)." : undefined }
         },
       }),
 
       listSchedules: tool({
-        description: "List the user's scheduled transfers.",
+        description: "List the user's scheduled transfers (upcoming and past).",
         parameters: z.object({}),
         execute: async () => {
           const owner = ownerAddress
           if (!owner) return { error: "No wallet address available." }
-          return { kind: "scheduleList", schedules: await listSchedules(owner) }
+          const rows = listSchedulesByOwner(owner).map((r) => ({
+            id: r.id,
+            to: r.recipient,
+            amount: `${r.amount} ${r.token || NATIVE_SYMBOL}`,
+            runAt: new Date(r.next_run).toLocaleString(),
+            recurrence: r.interval_secs ? `recurring (${r.remaining} left)` : "once",
+            status: r.status,
+            lastTx: r.last_tx || undefined,
+          }))
+          return { kind: "scheduleList", schedules: rows }
+        },
+      }),
+
+      cancelSchedule: tool({
+        description: "Cancel an active scheduled transfer by its id.",
+        parameters: z.object({ id: z.string() }),
+        execute: async ({ id }) => {
+          const owner = ownerAddress
+          if (!owner) return { error: "No wallet address available." }
+          const ok = dbCancelSchedule(id, owner)
+          return ok ? { kind: "scheduleCancelled", id } : { error: `No active schedule ${id} found for you.` }
         },
       }),
 

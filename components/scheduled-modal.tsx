@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react"
 import { CalendarClock, X, Loader2, Trash2, ArrowUpRight, RefreshCw } from "lucide-react"
 import { useCredentials } from "@/contexts/CredentialsContext"
 import { explorerTx } from "@/lib/solana"
+import { useOwnerSession } from "@/contexts/OwnerSessionContext"
+import { VerifyWalletPrompt } from "@/components/verify-wallet"
 
 const short = (a?: string) => (a && a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a || "")
 
@@ -21,25 +23,26 @@ interface Schedule {
 
 export function ScheduledModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const { activeAddress } = useCredentials()
+  const { isVerified } = useOwnerSession()
   const [items, setItems] = useState<Schedule[]>([])
   const [loading, setLoading] = useState(false)
 
   const load = useCallback(async () => {
-    if (!activeAddress) {
+    if (!activeAddress || !isVerified) {
       setItems([])
       return
     }
     setLoading(true)
     try {
-      const res = await fetch(`/api/schedules?owner=${activeAddress}`)
+      const res = await fetch(`/api/schedules?owner=${activeAddress}`, { cache: "no-store" })
       const j = await res.json()
-      setItems(j.schedules || [])
+      setItems(res.ok ? j.schedules || [] : [])
     } catch {
       setItems([])
     } finally {
       setLoading(false)
     }
-  }, [activeAddress])
+  }, [activeAddress, isVerified])
 
   useEffect(() => {
     if (isOpen) load()
@@ -79,11 +82,12 @@ export function ScheduledModal({ isOpen, onClose }: { isOpen: boolean; onClose: 
         </div>
 
         <div className="overflow-y-auto p-4 space-y-2">
-          {!activeAddress && <p className="text-sm text-gray-500">Set a private key (Autonomous mode) to schedule payments.</p>}
-          {activeAddress && loading && items.length === 0 && (
+          {!activeAddress && <p className="text-sm text-gray-500">Load a secret key (Autonomous mode) to schedule payments, or connect the wallet that created them to view them.</p>}
+          {activeAddress && !isVerified && <VerifyWalletPrompt />}
+          {activeAddress && isVerified && loading && items.length === 0 && (
             <div className="flex items-center gap-2 text-sm text-gray-500"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
           )}
-          {activeAddress && !loading && items.length === 0 && (
+          {activeAddress && isVerified && !loading && items.length === 0 && (
             <p className="text-sm text-gray-500">No scheduled payments yet. Try: “pay 1 SOL to &lt;address&gt; every week for 4 weeks”.</p>
           )}
           {items.map((s) => (

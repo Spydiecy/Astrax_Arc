@@ -21,6 +21,8 @@ import { AgentSteps } from "@/components/ui/agent-steps"
 
 import { getCurrentId, newChat, getMessages, saveMessages, chatStorageKey } from "@/lib/chat-history"
 import { explorerTx } from "@/lib/solana"
+import { absoluteUrl } from "@/lib/origin"
+import { VerifyWalletPrompt } from "@/components/verify-wallet"
 import type { Message } from "@ai-sdk/react"
 
 // ── Minimal markdown renderer (bold / code / lists / breaks) ────────────────────
@@ -198,8 +200,32 @@ function ImageCard({ result }: { result: any }) {
   )
 }
 
+/**
+ * Full payment-link URL on the domain currently open. Tracked links carry a
+ * path (/pay/<id>); older saved results only have an absolute url, so its path
+ * is re-based onto this domain too (legacy /payment-link/… links keep working).
+ */
+function linkHref(r: { path?: string; url?: string }): string {
+  if (r.path) return absoluteUrl(r.path)
+  if (!r.url) return ""
+  try {
+    const u = new URL(r.url)
+    return absoluteUrl(u.pathname + u.search)
+  } catch {
+    return r.url
+  }
+}
+
 // ── Render a tool result into a card ────────────────────────────────────────────
 function ToolCard({ result, callId }: { result: any; callId?: string }) {
+  if (result?.needsAuth) {
+    return (
+      <div className="mt-3 w-full max-w-xl">
+        <VerifyWalletPrompt />
+        <p className="mt-1 text-xs text-gray-500">After verifying, ask again.</p>
+      </div>
+    )
+  }
   if (!result || result.error) {
     return result?.error ? (
       <div className="mt-3 w-full max-w-xl rounded-lg border border-red-300 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 p-3 text-sm text-red-700 dark:text-red-300">
@@ -353,18 +379,39 @@ function ToolCard({ result, callId }: { result: any; callId?: string }) {
           <Field label="ID">{result.id}</Field>
         </CardShell>
       )
-    case "paymentLink":
+    case "paymentLink": {
+      const url = linkHref(result)
       return (
         <CardShell icon={<Link2 className="w-4 h-4" />} title="Payment Link">
           {result.description && <Field label="For">{result.description}</Field>}
           <Field label="Amount">{result.amount}</Field>
           <div className="mt-2 flex items-center gap-2 rounded border border-gray-200 dark:border-gray-800 p-2">
-            <span className="font-mono text-xs flex-1 break-all">{result.url}</span>
-            <CopyBtn value={result.url} />
+            <span className="font-mono text-xs flex-1 break-all">{url}</span>
+            <CopyBtn value={url} />
           </div>
-          <a href={result.url} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
+          <a href={url} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
             Open link <ArrowUpRight className="w-3.5 h-3.5" />
           </a>
+          {result.id && <p className="mt-2 text-xs text-gray-500">Tracked — it&apos;s marked paid automatically. See the sidebar <strong>Payment links</strong> tab.</p>}
+        </CardShell>
+      )
+    }
+    case "paymentLinkList":
+      return (
+        <CardShell icon={<Link2 className="w-4 h-4" />} title="Payment Links">
+          {result.links.length === 0 ? <p className="text-sm text-gray-500">No payment links yet.</p> : result.links.map((l: any) => (
+            <div key={l.id} className="rounded border border-gray-200 dark:border-gray-800 p-2 text-sm mb-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium">{l.amount}</span>
+                <span className={cn("text-xs font-medium", l.status === "paid" ? "text-green-500" : l.status === "open" ? "text-blue-500" : "text-gray-400")}>{l.status}</span>
+              </div>
+              {l.description && <div className="text-xs text-gray-500 truncate">{l.description}</div>}
+              <div className="flex items-center gap-1 text-xs text-gray-500">
+                <span className="font-mono truncate flex-1">{linkHref(l)}</span>
+                <CopyBtn value={linkHref(l)} />
+              </div>
+            </div>
+          ))}
         </CardShell>
       )
     case "contact":

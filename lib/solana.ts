@@ -14,6 +14,12 @@ export const EXPLORER_URL = "https://explorer.solana.com"
 
 export { LAMPORTS_PER_SOL }
 
+/**
+ * Highest transaction version we ask the RPC for. Clusters now carry v1
+ * transactions; requesting only up to v0 makes lookups of those fail outright.
+ */
+export const MAX_TX_VERSION = 1
+
 export function getConnection(): Connection {
   return new Connection(RPC_URL, "confirmed")
 }
@@ -39,7 +45,7 @@ export async function getBlockSummary(slot: number, rpcUrl: string = RPC_URL): P
       jsonrpc: "2.0",
       id: 1,
       method: "getBlock",
-      params: [slot, { commitment: "confirmed", maxSupportedTransactionVersion: 0, transactionDetails: "signatures", rewards: false }],
+      params: [slot, { commitment: "confirmed", maxSupportedTransactionVersion: MAX_TX_VERSION, transactionDetails: "signatures", rewards: false }],
     }),
   })
   if (!res.ok) throw new Error(`RPC HTTP ${res.status}`)

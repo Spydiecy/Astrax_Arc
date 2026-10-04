@@ -26,6 +26,7 @@ const LABELS: Record<string, string> = {
   listSchedules: "Loading schedules",
   cancelSchedule: "Cancelling schedule",
   createPaymentLink: "Creating payment link",
+  listPaymentLinks: "Loading payment links",
   storeAsset: "Storing asset on IPFS",
   listAssets: "Loading assets",
   swap: "Preparing swap",

@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useWallet } from "@solana/wallet-adapter-react"
 import { useWalletModal } from "@solana/wallet-adapter-react-ui"
-import { Wallet, ChevronDown, Copy, Check, LogOut, RefreshCw, Loader2 } from "lucide-react"
+import { Wallet, ChevronDown, Copy, Check, LogOut, RefreshCw, Loader2, ShieldCheck } from "lucide-react"
+import { useOwnerSession } from "@/contexts/OwnerSessionContext"
 import { cn } from "@/lib/utils"
 
 // Same footprint as the header's theme toggle (h-10, pill, thin border).
@@ -17,6 +18,7 @@ const short = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`
 export function CustomConnectButton({ className }: { className?: string }) {
   const { publicKey, wallet, connected, connecting, disconnect } = useWallet()
   const { setVisible } = useWalletModal()
+  const { signOut, verifiedAddresses } = useOwnerSession()
   const [mounted, setMounted] = useState(false)
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -104,7 +106,12 @@ export function CustomConnectButton({ className }: { className?: string }) {
           className="absolute right-0 z-50 mt-2 w-56 rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-black p-1 shadow-lg text-black dark:text-white"
         >
           <div className="px-3 pt-2 pb-1.5">
-            <div className="text-xs text-gray-500 dark:text-gray-400">{wallet?.adapter.name ?? "Wallet"}</div>
+            <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+              <span>{wallet?.adapter.name ?? "Wallet"}</span>
+              {verifiedAddresses.includes(address) && (
+                <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400"><ShieldCheck className="h-3 w-3" /> Verified</span>
+              )}
+            </div>
             <div className="font-mono text-xs break-all mt-0.5">{address}</div>
           </div>
           <div className="my-1 h-px bg-gray-200 dark:bg-gray-800" />
@@ -128,6 +135,7 @@ export function CustomConnectButton({ className }: { className?: string }) {
             role="menuitem"
             onClick={() => {
               setOpen(false)
+              signOut(address).catch(() => {}) // end this wallet's owner session too
               disconnect().catch(() => {})
             }}
             className={cn(itemCls, "text-red-600 dark:text-red-400")}

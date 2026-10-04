@@ -72,16 +72,22 @@ export async function getMintInfo(
   return { programId, decimals: info.decimals }
 }
 
-/** Native SOL transfer. */
+/**
+ * Native SOL transfer. `references` (Solana Pay) are added as read-only,
+ * non-signer keys so the payment can later be found with getSignaturesForAddress.
+ */
 export async function buildSolTransfer(
   connection: Connection,
   from: PublicKey,
   to: PublicKey,
   amount: string | number,
+  references: PublicKey[] = [],
 ): Promise<Transaction> {
   const lamports = toBaseUnits(amount, SOL_DECIMALS)
   if (lamports <= 0n) throw new Error("Amount must be greater than zero")
-  const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: from, toPubkey: to, lamports }))
+  const ix = SystemProgram.transfer({ fromPubkey: from, toPubkey: to, lamports })
+  for (const ref of references) ix.keys.push({ pubkey: ref, isSigner: false, isWritable: false })
+  const tx = new Transaction().add(ix)
   return prep(connection, tx, from)
 }
 

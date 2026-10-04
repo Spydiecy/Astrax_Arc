@@ -1,6 +1,7 @@
 "use client"
 
 import { CredentialsProvider } from "@/contexts/CredentialsContext"
+import { OwnerSessionProvider } from "@/contexts/OwnerSessionContext"
 import { ThemeProvider } from "@/components/ui/theme-provider"
 import { ConnectionProvider, WalletProvider } from "@solana/wallet-adapter-react"
 import { WalletModalProvider } from "@solana/wallet-adapter-react-ui"
@@ -17,7 +18,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
       <ConnectionProvider endpoint={RPC_URL}>
         <WalletProvider wallets={WALLETS} autoConnect>
           <WalletModalProvider>
-            <CredentialsProvider>{children}</CredentialsProvider>
+            <CredentialsProvider>
+              <OwnerSessionProvider>{children}</OwnerSessionProvider>
+            </CredentialsProvider>
           </WalletModalProvider>
         </WalletProvider>
       </ConnectionProvider>

@@ -7,6 +7,7 @@ import { getAssociatedTokenAddressSync, getAccount } from "@solana/spl-token"
 import {
   getConnection,
   getBlockSummary,
+  MAX_TX_VERSION,
   NATIVE_SYMBOL,
   EXPLORER_URL,
   CLUSTER,
@@ -31,13 +32,17 @@ import { spotPriceUSD, dailyCandles, indicativeCandles } from "@/lib/prices"
 import { uploadJSONToIPFS, isPinataConfigured } from "@/lib/pinata"
 import { explainTarget } from "@/lib/explain"
 import { saveAddress, resolveName, listAddresses, addAsset, listAssets } from "@/lib/store"
-import { insertSchedule, listSchedulesByOwner, cancelSchedule as dbCancelSchedule } from "@/lib/db"
+import { insertSchedule, listSchedulesByOwner, cancelSchedule as dbCancelSchedule, listPaymentLinksByOwner } from "@/lib/db"
+import { createPaymentLink as createPaymentLinkRecord, paymentLinkPath, paymentLinkUrl, verifyPaymentLink } from "@/lib/payment-links"
+import { requestOrigin } from "@/lib/origin"
+import { isOwner, NOT_OWNER } from "@/lib/auth"
+import { NextRequest } from "next/server"
+import { POST as generateImage } from "@/app/api/generate-image/route"
 import { encryptSecret } from "@/lib/crypto"
 
 export const runtime = "nodejs"
 export const maxDuration = 60
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
 
 // ── Model selection: Mistral first, Google Gemini as fallback ───────────────────
 function getModel() {
@@ -156,7 +161,7 @@ Guidance:
 - "schedule 2 ${NATIVE_SYMBOL} to alice tomorrow at 5pm" → scheduleTransfer (one-time)
 - "pay alice 500 ${NATIVE_SYMBOL} every month for a year / salary" → scheduleTransfer with every:"monthly", occurrences:12
 - "show my scheduled payments" → listSchedules ; "cancel schedule <id>" → cancelSchedule
-- "payment link for 0.5 ${NATIVE_SYMBOL}" → createPaymentLink
+- "payment link for 0.5 ${NATIVE_SYMBOL}" → createPaymentLink ; "my payment links / has my link been paid" → listPaymentLinks
 - "save alice as <address>" → saveContact ; "who is alice" → resolveContact
 - "store asset <link>" → storeAsset ; "my assets" → listAssets
 
@@ -164,7 +169,7 @@ Guidance:
 - **bold** for key terms, backticks for addresses/signatures. Keep it to one or two sentences. Never invent signatures, addresses, or balances — only report tool output.
 - Do NOT add notes, footnotes, caveats, unit conversions or mentions of pages/features that aren't in the tool result.
 - If a tool returns an error, repeat its reason in your own short sentence. Never guess at other causes, amounts or commands.
-- Never retype full addresses, mints or signatures in your text — the card below shows them exactly. Say "the recipient", a contact name, or the token symbol instead.
+- Never retype full addresses, mints, signatures or URLs/links in your text — the card below shows them exactly. Say "the recipient", "the link below", a contact name, or the token symbol instead.
 - Plain markdown only — never output HTML or JSX-style tags.`
 
 // Turn raw web3.js / RPC errors into a plain, accurate reason so the model
@@ -207,6 +212,8 @@ ${hasSigner ? "" : "- No secret key is loaded. Only if a write tool returns a no
 }
 
 export async function POST(req: Request) {
+  // The domain this request came in on (localhost, preview, production…).
+  const origin = requestOrigin(req)
   const body = await req.json()
   const messages = body.messages ?? []
   const signingMode: "auto" | "wallet" = body.signingMode === "auto" ? "auto" : "wallet"
@@ -225,6 +232,11 @@ export async function POST(req: Request) {
 
   const wallet = signingMode === "auto" ? makeWallet(privateKey) : null
   const ownerAddress = signingMode === "auto" ? wallet?.publicKey : walletAddress
+  // `walletAddress` is only a claim from the browser. Owner-only data (schedules,
+  // payment links, assets) needs proof: the secret key itself (autonomous), or a
+  // verified wallet session cookie (wallet mode).
+  const verifiedOwner = signingMode === "auto" ? wallet?.publicKey : isOwner(req, walletAddress) ? walletAddress : undefined
+  const needOwner = () => (ownerAddress ? NOT_OWNER : { error: "No wallet address available." })
 
   // Guard for write tools: either a server wallet (auto) or a connected address (wallet).
   const noSigner = () =>
@@ -313,7 +325,7 @@ export async function POST(req: Request) {
         parameters: z.object({ hash: z.string() }),
         execute: async ({ hash }) => {
           try {
-            const tx = await connection.getParsedTransaction(hash, { maxSupportedTransactionVersion: 0 })
+            const tx = await connection.getParsedTransaction(hash, { maxSupportedTransactionVersion: MAX_TX_VERSION })
             if (!tx) return { error: "Transaction not found." }
             const keys = tx.transaction.message.accountKeys
             const from = keys[0]?.pubkey.toBase58()
@@ -701,8 +713,8 @@ export async function POST(req: Request) {
         description: "List the user's scheduled transfers (upcoming and past).",
         parameters: z.object({}),
         execute: async () => {
-          const owner = ownerAddress
-          if (!owner) return { error: "No wallet address available." }
+          const owner = verifiedOwner
+          if (!owner) return needOwner()
           const rows = listSchedulesByOwner(owner).map((r) => ({
             id: r.id,
             to: r.recipient,
@@ -720,20 +732,45 @@ export async function POST(req: Request) {
         description: "Cancel an active scheduled transfer by its id.",
         parameters: z.object({ id: z.string() }),
         execute: async ({ id }) => {
-          const owner = ownerAddress
-          if (!owner) return { error: "No wallet address available." }
+          const owner = verifiedOwner
+          if (!owner) return needOwner()
           const ok = dbCancelSchedule(id, owner)
           return ok ? { kind: "scheduleCancelled", id } : { error: `No active schedule ${id} found for you.` }
         },
       }),
 
       createPaymentLink: tool({
-        description: `Create a shareable payment link requesting ${NATIVE_SYMBOL} to the user's address.`,
-        parameters: z.object({ amount: z.string(), description: z.string().optional() }),
+        description: `Create a shareable payment link requesting ${NATIVE_SYMBOL} to the user's address. Astrax tracks it and marks it paid automatically once someone pays.`,
+        parameters: z.object({ amount: z.string(), description: z.string().optional().describe("What the payment is for (shown to the payer)") }),
         execute: async ({ amount, description }) => {
           if (!ownerAddress || !isValidAddress(ownerAddress)) return { error: "No receiving address available. Connect a wallet or add a secret key." }
+          if (!verifiedOwner) return NOT_OWNER
           if (!/^\d+(\.\d+)?$/.test(amount) || Number(amount) <= 0) return { error: `Invalid amount "${amount}".` }
-          return { kind: "paymentLink", url: `${APP_URL}/payment-link/${ownerAddress}/${amount}`, address: ownerAddress, amount: `${amount} ${NATIVE_SYMBOL}`, description }
+          const link = createPaymentLinkRecord({ owner: verifiedOwner, amount, description })
+          return { kind: "paymentLink", id: link.id, path: paymentLinkPath(link.id), url: paymentLinkUrl(link.id, origin), address: verifiedOwner, amount: `${amount} ${NATIVE_SYMBOL}`, description: link.description || undefined, status: link.status }
+        },
+      }),
+
+      listPaymentLinks: tool({
+        description: "List the user's payment links and whether each has been paid.",
+        parameters: z.object({}),
+        execute: async () => {
+          if (!verifiedOwner) return needOwner()
+          const rows = await Promise.all(
+            listPaymentLinksByOwner(verifiedOwner, 20).map((r) => (r.status === "open" ? verifyPaymentLink(r) : r)),
+          )
+          return {
+            kind: "paymentLinkList",
+            links: rows.map((r) => ({
+              id: r.id,
+              path: paymentLinkPath(r.id),
+              url: paymentLinkUrl(r.id, origin),
+              amount: `${r.amount} ${r.token}`,
+              description: r.description || undefined,
+              status: r.status,
+              createdAt: new Date(r.created_at).toLocaleString(),
+            })),
+          }
         },
       }),
 
@@ -741,9 +778,9 @@ export async function POST(req: Request) {
         description: "Store a reference to an asset (e.g. an IPFS link) with a description, owned by the user.",
         parameters: z.object({ link: z.string(), description: z.string() }),
         execute: async ({ link, description }) => {
-          if (!ownerAddress) return { error: "No wallet address available." }
-          await addAsset({ link, description, owner: ownerAddress, createdAt: new Date().toISOString() })
-          return { kind: "asset", link, description, owner: ownerAddress, saved: true }
+          if (!verifiedOwner) return needOwner()
+          await addAsset({ link, description, owner: verifiedOwner, createdAt: new Date().toISOString() })
+          return { kind: "asset", link, description, owner: verifiedOwner, saved: true }
         },
       }),
 
@@ -751,8 +788,8 @@ export async function POST(req: Request) {
         description: "List the user's stored assets.",
         parameters: z.object({}),
         execute: async () => {
-          if (!ownerAddress) return { error: "No wallet address available." }
-          return { kind: "assetList", assets: await listAssets(ownerAddress) }
+          if (!verifiedOwner) return needOwner()
+          return { kind: "assetList", assets: await listAssets(verifiedOwner) }
         },
       }),
 
@@ -805,11 +842,13 @@ export async function POST(req: Request) {
             return { error: "Image generation needs NEXT_PUBLIC_GEMINI_KEY. Tip: the **generateDiagram** tool renders flowcharts without any key." }
           }
           try {
-            const res = await fetch(`${APP_URL}/api/generate-image`, {
+            // Call the handler in-process: no self-HTTP request, so it doesn't
+            // depend on (client-controlled) Host headers or a configured base URL.
+            const res = await generateImage(new NextRequest("http://internal/api/generate-image", {
               method: "POST",
               headers: { "content-type": "application/json" },
               body: JSON.stringify({ prompt, isSmartContractWorkflow: !!isContract, type: isContract ? "workflow" : "general" }),
-            })
+            }))
             const j = await res.json()
             if (!res.ok || !j.imageBase64) return { error: j.error || "Image generation failed." }
             return { kind: "image", title: "Generated image", imageBase64: j.imageBase64 }

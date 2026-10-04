@@ -2,7 +2,7 @@
 // signature or an account address and it returns a structured, human-readable
 // breakdown + risk flags. Account classification is done via on-chain reads.
 import { PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js"
-import { getConnection, NATIVE_SYMBOL, explorerTx, explorerAddress, isValidAddress } from "./solana"
+import { getConnection, NATIVE_SYMBOL, explorerTx, explorerAddress, isValidAddress, MAX_TX_VERSION } from "./solana"
 
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
@@ -38,7 +38,7 @@ async function explainTx(signature: string): Promise<ExplainResult | { error: st
   const connection = getConnection()
   let tx
   try {
-    tx = await connection.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 })
+    tx = await connection.getParsedTransaction(signature, { maxSupportedTransactionVersion: MAX_TX_VERSION })
   } catch {
     tx = null
   }

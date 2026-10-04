@@ -31,9 +31,73 @@ function db(): DatabaseSync {
       note TEXT,
       created_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS payment_links (
+      id TEXT PRIMARY KEY,
+      owner TEXT NOT NULL,
+      recipient TEXT NOT NULL,
+      amount TEXT NOT NULL,
+      token TEXT NOT NULL DEFAULT 'SOL',
+      description TEXT NOT NULL DEFAULT '',
+      reference TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'open',
+      paid_signature TEXT,
+      payer TEXT,
+      paid_at INTEGER,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS payment_links_owner ON payment_links(owner, created_at);
   `)
   _db = d
   return d
+}
+
+// ── Payment links ────────────────────────────────────────────────────────────
+export interface PaymentLinkRow {
+  id: string
+  owner: string
+  recipient: string
+  amount: string
+  token: string
+  description: string
+  /** Solana Pay reference key: a random public key included in the payment tx so it can be found on-chain. */
+  reference: string
+  status: "open" | "paid" | "cancelled"
+  paid_signature: string | null
+  payer: string | null
+  paid_at: number | null
+  created_at: number
+}
+
+export function insertPaymentLink(l: Pick<PaymentLinkRow, "id" | "owner" | "recipient" | "amount" | "token" | "description" | "reference">): void {
+  db()
+    .prepare(
+      `INSERT INTO payment_links (id, owner, recipient, amount, token, description, reference, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+    )
+    .run(l.id, l.owner, l.recipient, l.amount, l.token, l.description, l.reference, Date.now())
+}
+
+export function getPaymentLink(id: string): PaymentLinkRow | null {
+  return (db().prepare(`SELECT * FROM payment_links WHERE id = ?`).get(id) as any) ?? null
+}
+
+export function listPaymentLinksByOwner(owner: string, limit = 100): PaymentLinkRow[] {
+  return db().prepare(`SELECT * FROM payment_links WHERE owner = ? ORDER BY created_at DESC LIMIT ?`).all(owner, limit) as any
+}
+
+/** Marks an open link paid. Returns false if it was already paid/cancelled. */
+export function markPaymentLinkPaid(id: string, signature: string, payer: string, paidAt: number): boolean {
+  const res = db()
+    .prepare(`UPDATE payment_links SET status = 'paid', paid_signature = ?, payer = ?, paid_at = ? WHERE id = ? AND status = 'open'`)
+    .run(signature, payer, paidAt, id)
+  return (res.changes ?? 0) > 0
+}
+
+export function cancelPaymentLink(id: string, owner: string): boolean {
+  const res = db()
+    .prepare(`UPDATE payment_links SET status = 'cancelled' WHERE id = ? AND owner = ? AND status = 'open'`)
+    .run(id, owner)
+  return (res.changes ?? 0) > 0
 }
 
 export interface ScheduleRow {

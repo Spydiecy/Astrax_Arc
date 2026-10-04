@@ -195,7 +195,7 @@ function ToolCard({ result }: { result: any }) {
     case "candlestick":
       return (
         <div className="mt-3 w-full max-w-2xl">
-          <CandlestickChart data={result.data} symbol={result.symbol} />
+          <CandlestickChart data={result.data} symbol={result.symbol} days={result.days} />
           {result.indicative && (
             <p className="mt-1 text-xs text-gray-500">Indicative series — {result.symbol} has no live Coinbase market, derived from spot price.</p>
           )}

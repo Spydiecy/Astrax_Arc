@@ -1,9 +1,9 @@
 "use client"
 
-import React from 'react'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { cn } from '@/lib/utils'
-import { TrendingUp, TrendingDown, BarChart3 } from 'lucide-react'
+import React, { useMemo, useState } from "react"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { cn } from "@/lib/utils"
+import { TrendingUp, TrendingDown, BarChart3 } from "lucide-react"
 
 interface CandlestickData {
   timestamp: number
@@ -17,11 +17,75 @@ interface CandlestickData {
 interface CandlestickChartProps {
   data: CandlestickData[]
   symbol: string
+  /** Number of days the series covers (used for labels). Defaults to the candle count. */
+  days?: number
   className?: string
 }
 
-const CandlestickChart: React.FC<CandlestickChartProps> = ({ data, symbol, className }) => {
-  if (!data || data.length === 0) {
+// SVG layout (viewBox units; the SVG scales to the card width).
+const W = 640
+const H = 300
+const PAD_TOP = 12
+const PAD_LEFT = 8
+const AXIS_RIGHT = 64 // price labels
+const AXIS_BOTTOM = 24 // date labels
+const PLOT_W = W - PAD_LEFT - AXIS_RIGHT
+const PLOT_H = H - PAD_TOP - AXIS_BOTTOM
+const UP = "#10b981"
+const DOWN = "#ef4444"
+
+/** Price with precision that fits its magnitude ($121.57, $0.4213, $0.00001234). */
+function formatPrice(p: number): string {
+  if (!Number.isFinite(p)) return "—"
+  const abs = Math.abs(p)
+  const digits = abs >= 1000 ? 0 : abs >= 1 ? 2 : abs >= 0.01 ? 4 : 8
+  return `$${p.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`
+}
+
+function formatVolume(v: number): string {
+  if (v >= 1e9) return `${(v / 1e9).toFixed(2)}B`
+  if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M`
+  if (v >= 1e3) return `${(v / 1e3).toFixed(2)}K`
+  return v.toFixed(2)
+}
+
+// Candles are UTC days; fixed locale + UTC keeps labels on the right day and
+// identical between server and client renders.
+const formatDay = (ts: number) =>
+  new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })
+
+/** "Nice" evenly spaced ticks covering [min, max] (1/2/2.5/5 × 10ⁿ steps). */
+function niceTicks(min: number, max: number, target = 5): { ticks: number[]; lo: number; hi: number } {
+  const span = max - min || Math.abs(max) * 0.02 || 1
+  const raw = span / target
+  const mag = 10 ** Math.floor(Math.log10(raw))
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) ?? 10 * mag
+  const lo = Math.floor(min / step) * step
+  const hi = Math.ceil(max / step) * step
+  const ticks: number[] = []
+  for (let t = lo; t <= hi + step / 2; t += step) ticks.push(Number(t.toPrecision(12)))
+  return { ticks, lo, hi }
+}
+
+const CandlestickChart: React.FC<CandlestickChartProps> = ({ data, symbol, days, className }) => {
+  const [hover, setHover] = useState<number | null>(null)
+
+  const chart = useMemo(() => {
+    if (!data?.length) return null
+    const candles = [...data].sort((a, b) => a.timestamp - b.timestamp)
+    const high = Math.max(...candles.map((d) => d.high))
+    const low = Math.min(...candles.map((d) => d.low))
+    const { ticks, lo, hi } = niceTicks(low, high)
+    const y = (p: number) => PAD_TOP + ((hi - p) / (hi - lo)) * PLOT_H
+    const slot = PLOT_W / candles.length
+    const bodyW = Math.max(3, Math.min(28, slot * 0.6))
+    const x = (i: number) => PAD_LEFT + slot * i + slot / 2
+    // At most ~6 date labels so they never overlap.
+    const labelEvery = Math.max(1, Math.ceil(candles.length / 6))
+    return { candles, high, low, ticks, y, x, slot, bodyW, labelEvery }
+  }, [data])
+
+  if (!chart) {
     return (
       <Card className={cn("w-full", className)}>
         <CardContent className="flex items-center justify-center h-64">
@@ -31,201 +95,127 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({ data, symbol, class
     )
   }
 
-  // Calculate price statistics
-  const prices = data.map(d => d.close)
-  const currentPrice = prices[prices.length - 1]
-  const previousPrice = prices[prices.length - 2] || currentPrice
-  const priceChange = currentPrice - previousPrice
-  const priceChangePercent = ((priceChange / previousPrice) * 100)
-  
-  const highestPrice = Math.max(...data.map(d => d.high))
-  const lowestPrice = Math.min(...data.map(d => d.low))
-  const totalVolume = data.reduce((sum, d) => sum + d.volume, 0)
-
-  // Calculate chart dimensions
-  const chartHeight = 300
-  const chartWidth = data.length * 8 // 8px per candle
-  const maxPrice = Math.max(...data.map(d => d.high))
-  const minPrice = Math.min(...data.map(d => d.low))
-  const priceRange = maxPrice - minPrice
-
-  const formatPrice = (price: number) => {
-    return price.toFixed(6)
-  }
-
-  const formatDate = (timestamp: number) => {
-    return new Date(timestamp).toLocaleDateString()
-  }
-
-  const formatVolume = (volume: number) => {
-    if (volume >= 1000000) return `${(volume / 1000000).toFixed(2)}M`
-    if (volume >= 1000) return `${(volume / 1000).toFixed(2)}K`
-    return volume.toFixed(2)
-  }
+  const { candles, high, low, ticks, y, x, slot, bodyW, labelEvery } = chart
+  const first = candles[0]
+  const last = candles[candles.length - 1]
+  const change = last.close - first.open
+  const changePct = first.open ? (change / first.open) * 100 : 0
+  const up = change >= 0
+  const totalVolume = candles.reduce((s, d) => s + (d.volume || 0), 0)
+  const period = `${days ?? candles.length}D`
+  const active = hover != null ? candles[hover] : null
 
   return (
     <Card className={cn("w-full", className)}>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-2">
-            <BarChart3 className="w-5 h-5" />
-            {symbol.toUpperCase()} Candlestick Chart
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <BarChart3 className="w-4 h-4" />
+            {symbol.toUpperCase()} / USD
+            <span className="text-xs font-normal text-muted-foreground">{period} · daily</span>
           </CardTitle>
-          <div className="flex items-center gap-2">
-            {priceChange >= 0 ? (
-              <TrendingUp className="w-4 h-4 text-green-500" />
-            ) : (
-              <TrendingDown className="w-4 h-4 text-red-500" />
-            )}
-            <span className={cn(
-              "font-mono text-sm",
-              priceChange >= 0 ? "text-green-500" : "text-red-500"
-            )}>
-              {priceChange >= 0 ? '+' : ''}{priceChangePercent.toFixed(2)}%
-            </span>
+          <div className={cn("flex items-center gap-1.5 font-mono text-sm", up ? "text-green-500" : "text-red-500")}>
+            {up ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
+            {up ? "+" : ""}
+            {changePct.toFixed(2)}%
           </div>
         </div>
       </CardHeader>
       <CardContent>
-        {/* Price Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          <div className="space-y-1">
-            <p className="text-sm text-muted-foreground">Current Price</p>
-            <p className="font-mono text-lg font-semibold">${formatPrice(currentPrice)}</p>
-          </div>
-          <div className="space-y-1">
-            <p className="text-sm text-muted-foreground">24h High</p>
-            <p className="font-mono text-sm text-green-600">${formatPrice(highestPrice)}</p>
-          </div>
-          <div className="space-y-1">
-            <p className="text-sm text-muted-foreground">24h Low</p>
-            <p className="font-mono text-sm text-red-600">${formatPrice(lowestPrice)}</p>
-          </div>
-          <div className="space-y-1">
-            <p className="text-sm text-muted-foreground">Total Volume</p>
-            <p className="font-mono text-sm">{formatVolume(totalVolume)}</p>
-          </div>
+        {/* Period stats */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+          <Stat label="Last price" value={formatPrice(last.close)} strong />
+          <Stat label={`${period} high`} value={formatPrice(high)} className="text-green-500" />
+          <Stat label={`${period} low`} value={formatPrice(low)} className="text-red-500" />
+          <Stat label={`${period} volume`} value={totalVolume > 0 ? `${formatVolume(totalVolume)} ${symbol.toUpperCase()}` : "—"} />
         </div>
 
-        {/* Chart Container */}
-        <div className="relative">
-          <div className="overflow-x-auto">
-            <div className="min-w-full" style={{ width: Math.max(chartWidth, 600) }}>
-              <svg
-                width="100%"
-                height={chartHeight}
-                viewBox={`0 0 ${Math.max(chartWidth, 600)} ${chartHeight}`}
-                className="border rounded-lg bg-gradient-to-b from-background to-muted/20"
-              >
-                {/* Grid Lines */}
-                {Array.from({ length: 6 }, (_, i) => {
-                  const y = (i * chartHeight) / 5
-                  const price = maxPrice - (i * priceRange) / 5
-                  return (
-                    <g key={i}>
-                      <line
-                        x1="0"
-                        y1={y}
-                        x2="100%"
-                        y2={y}
-                        stroke="currentColor"
-                        strokeOpacity="0.1"
-                        strokeDasharray="2,2"
-                      />
-                      <text
-                        x="8"
-                        y={y - 4}
-                        fontSize="10"
-                        fill="currentColor"
-                        opacity="0.6"
-                      >
-                        ${formatPrice(price)}
-                      </text>
-                    </g>
-                  )
-                })}
-
-                {/* Candlesticks */}
-                {data.map((candle, index) => {
-                  const x = index * 8 + 40 // 8px spacing + 40px left margin
-                  const openY = chartHeight - ((candle.open - minPrice) / priceRange) * (chartHeight - 40) - 20
-                  const closeY = chartHeight - ((candle.close - minPrice) / priceRange) * (chartHeight - 40) - 20
-                  const highY = chartHeight - ((candle.high - minPrice) / priceRange) * (chartHeight - 40) - 20
-                  const lowY = chartHeight - ((candle.low - minPrice) / priceRange) * (chartHeight - 40) - 20
-                  
-                  const isGreen = candle.close >= candle.open
-                  const bodyHeight = Math.abs(closeY - openY)
-                  const bodyY = Math.min(openY, closeY)
-
-                  return (
-                    <g key={index}>
-                      {/* Wick */}
-                      <line
-                        x1={x + 3}
-                        y1={highY}
-                        x2={x + 3}
-                        y2={lowY}
-                        stroke={isGreen ? "#10b981" : "#ef4444"}
-                        strokeWidth="1"
-                      />
-                      
-                      {/* Body */}
-                      <rect
-                        x={x}
-                        y={bodyY}
-                        width="6"
-                        height={Math.max(bodyHeight, 1)}
-                        fill={isGreen ? "#10b981" : "#ef4444"}
-                        opacity={isGreen ? "0.8" : "0.8"}
-                        rx="1"
-                      />
-                      
-                      {/* Hover tooltip trigger */}
-                      <rect
-                        x={x - 2}
-                        y={highY}
-                        width="10"
-                        height={lowY - highY}
-                        fill="transparent"
-                        className="cursor-pointer"
-                      >
-                        <title>
-                          {formatDate(candle.timestamp)}
-                          {'\n'}Open: ${formatPrice(candle.open)}
-                          {'\n'}High: ${formatPrice(candle.high)}
-                          {'\n'}Low: ${formatPrice(candle.low)}
-                          {'\n'}Close: ${formatPrice(candle.close)}
-                          {'\n'}Volume: {formatVolume(candle.volume)}
-                        </title>
-                      </rect>
-                    </g>
-                  )
-                })}
-              </svg>
-            </div>
-          </div>
-
-          {/* Time axis */}
-          <div className="flex justify-between mt-2 px-10 text-xs text-muted-foreground">
-            <span>{formatDate(data[0]?.timestamp)}</span>
-            <span>{formatDate(data[Math.floor(data.length / 2)]?.timestamp)}</span>
-            <span>{formatDate(data[data.length - 1]?.timestamp)}</span>
-          </div>
+        {/* Hovered candle details (fixed height so the layout doesn't jump) */}
+        <div className="h-5 mb-1 text-xs font-mono text-muted-foreground flex flex-wrap gap-x-3" aria-live="polite">
+          {active ? (
+            <>
+              <span className="text-foreground">{formatDay(active.timestamp)}</span>
+              <span>O {formatPrice(active.open)}</span>
+              <span>H {formatPrice(active.high)}</span>
+              <span>L {formatPrice(active.low)}</span>
+              <span className={active.close >= active.open ? "text-green-500" : "text-red-500"}>C {formatPrice(active.close)}</span>
+            </>
+          ) : (
+            <span>Hover a candle for details</span>
+          )}
         </div>
 
-        {/* Legend */}
-        <div className="flex items-center justify-center gap-6 mt-4 pt-4 border-t">
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 bg-green-500 rounded-sm"></div>
-            <span className="text-sm text-muted-foreground">Bullish (Green)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 bg-red-500 rounded-sm"></div>
-            <span className="text-sm text-muted-foreground">Bearish (Red)</span>
-          </div>
-        </div>
+        <svg
+          viewBox={`0 0 ${W} ${H}`}
+          className="w-full h-auto rounded-lg border bg-muted/20 text-muted-foreground select-none"
+          role="img"
+          aria-label={`${symbol.toUpperCase()} daily candlestick chart, ${formatDay(first.timestamp)} to ${formatDay(last.timestamp)}, ${up ? "up" : "down"} ${Math.abs(changePct).toFixed(2)} percent`}
+          onMouseLeave={() => setHover(null)}
+        >
+          {/* Price grid + right-hand axis */}
+          {ticks.map((t) => (
+            <g key={t}>
+              <line x1={PAD_LEFT} x2={PAD_LEFT + PLOT_W} y1={y(t)} y2={y(t)} stroke="currentColor" strokeOpacity={0.15} strokeDasharray="3 3" />
+              <text x={PAD_LEFT + PLOT_W + 8} y={y(t)} dominantBaseline="middle" fontSize={11} fill="currentColor">
+                {formatPrice(t)}
+              </text>
+            </g>
+          ))}
+
+          {/* Date labels aligned under their candles */}
+          {candles.map((c, i) =>
+            i % labelEvery === 0 || i === candles.length - 1 ? (
+              <text key={`d${i}`} x={x(i)} y={H - 8} textAnchor="middle" fontSize={11} fill="currentColor">
+                {formatDay(c.timestamp)}
+              </text>
+            ) : null,
+          )}
+
+          {/* Hover column highlight */}
+          {hover != null && (
+            <rect x={x(hover) - slot / 2} y={PAD_TOP} width={slot} height={PLOT_H} fill="currentColor" fillOpacity={0.06} />
+          )}
+
+          {/* Candles */}
+          {candles.map((c, i) => {
+            const color = c.close >= c.open ? UP : DOWN
+            const top = y(Math.max(c.open, c.close))
+            const bottom = y(Math.min(c.open, c.close))
+            return (
+              <g key={c.timestamp}>
+                <line x1={x(i)} x2={x(i)} y1={y(c.high)} y2={y(c.low)} stroke={color} strokeWidth={1.5} />
+                <rect x={x(i) - bodyW / 2} y={top} width={bodyW} height={Math.max(bottom - top, 1.5)} fill={color} rx={1.5} />
+                {/* Full-height hit area for hover */}
+                <rect
+                  x={x(i) - slot / 2}
+                  y={PAD_TOP}
+                  width={slot}
+                  height={PLOT_H}
+                  fill="transparent"
+                  onMouseEnter={() => setHover(i)}
+                />
+              </g>
+            )
+          })}
+
+          {/* Last-price marker on the axis */}
+          <line x1={PAD_LEFT} x2={PAD_LEFT + PLOT_W} y1={y(last.close)} y2={y(last.close)} stroke={up ? UP : DOWN} strokeOpacity={0.5} strokeWidth={1} />
+          <rect x={PAD_LEFT + PLOT_W + 2} y={y(last.close) - 9} width={AXIS_RIGHT - 4} height={18} rx={3} fill={up ? UP : DOWN} />
+          <text x={PAD_LEFT + PLOT_W + 8} y={y(last.close)} dominantBaseline="middle" fontSize={11} fontWeight={600} fill="#fff">
+            {formatPrice(last.close)}
+          </text>
+        </svg>
       </CardContent>
     </Card>
+  )
+}
+
+function Stat({ label, value, className, strong }: { label: string; value: string; className?: string; strong?: boolean }) {
+  return (
+    <div className="space-y-0.5 min-w-0">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className={cn("font-mono truncate", strong ? "text-base font-semibold" : "text-sm", className)}>{value}</p>
+    </div>
   )
 }
 

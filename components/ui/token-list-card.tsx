@@ -35,7 +35,8 @@ const TokenListCard: React.FC<TokenListCardProps> = ({ tokens, className }) => {
     const tokenIcons: Record<string, string> = {
       'USDT': '/usdt.png',
       'USDC': '/usdc.png',
-  'S': '/s.svg',
+      'SOL': '/s.svg',
+      'S': '/s.svg',
       'crvUSD': '/crv.png',
       'DAI': '/dai.png',
       'DMCX': '/dmcx.png',
@@ -51,10 +52,10 @@ const TokenListCard: React.FC<TokenListCardProps> = ({ tokens, className }) => {
   }
 
   const formatAddress = (address: string): string => {
-    if (address === '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE') {
+    if (address === 'native') {
       return 'Native Token'
     }
-    return `${address.slice(0, 6)}...${address.slice(-4)}`
+    return `${address.slice(0, 4)}...${address.slice(-4)}`
   }
 
   return (
@@ -62,7 +63,7 @@ const TokenListCard: React.FC<TokenListCardProps> = ({ tokens, className }) => {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Coins className="w-5 h-5" />
-          Supported Tokens on Sonic
+          Supported Tokens on Solana
           <span className="ml-auto text-sm font-normal text-muted-foreground">
             {tokens.length} tokens
           </span>
@@ -128,7 +129,7 @@ const TokenListCard: React.FC<TokenListCardProps> = ({ tokens, className }) => {
 
                 {/* Explorer Link */}
                 <a
-                  href={`https://explorer.testnet.soniclabs.com/address/${token.address}`}
+                  href={`https://explorer.solana.com/address/${token.address}?cluster=devnet`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="p-2 rounded-lg hover:bg-muted transition-colors"
@@ -144,8 +145,8 @@ const TokenListCard: React.FC<TokenListCardProps> = ({ tokens, className }) => {
         {/* Footer Info */}
         <div className="mt-6 pt-4 border-t">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>Network: Sonic Testnet</span>
-            <span>Chain ID: 14601</span>
+            <span>Network: Solana</span>
+            <span>Cluster: Devnet</span>
           </div>
         </div>
       </CardContent>

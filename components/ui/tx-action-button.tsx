@@ -1,104 +1,60 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
-import {
-  useSendTransaction,
-  useWriteContract,
-  useWalletClient,
-  useWaitForTransactionReceipt,
-} from "wagmi"
+import { useCallback, useState } from "react"
+import { useConnection, useWallet } from "@solana/wallet-adapter-react"
+import { Transaction } from "@solana/web3.js"
 import { Loader2, Zap, CheckCircle2, ArrowUpRight } from "lucide-react"
-import { ERC20_ABI, explorerTx } from "@/lib/sonic"
-import { ASTRAX_TOKEN_ABI, ASTRAX_TOKEN_BYTECODE } from "@/lib/erc20"
-import { ASTRAX_NFT_ABI, ASTRAX_NFT_BYTECODE } from "@/lib/erc721"
-import type { Hex } from "viem"
+import { explorerTx } from "@/lib/solana"
 
 export interface PendingAction {
-  action: "sendNative" | "sendToken" | "deployToken" | "deployNFT" | "deployContract" | "mintNFT"
+  action: "sendNative" | "sendToken" | "deployToken" | "deployNFT" | "mintNFT"
   label: string
+  /** base64-encoded transaction built server-side; signed & sent in the wallet. */
+  txBase64: string
   to?: string
   contract?: string
-  valueWei?: string
-  tokenAddress?: string
-  amountWei?: string
+  mint?: string
   symbol?: string
   amount?: string
   name?: string
   supply?: string
-  baseURI?: string
-  bytecode?: string
-  abi?: any[]
-  constructorArgs?: string[]
+  metadataUri?: string
+  image?: string
 }
 
 const short = (a?: string) => (a && a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a || "")
 
-export function TxActionButton({ action, onDone }: { action: PendingAction; onDone?: (hash: string) => void }) {
-  const { sendTransactionAsync } = useSendTransaction()
-  const { writeContractAsync } = useWriteContract()
-  const { data: walletClient } = useWalletClient()
-  const [txHash, setTxHash] = useState<Hex | undefined>()
+export function TxActionButton({ action, onDone }: { action: PendingAction; onDone?: (sig: string) => void }) {
+  const { connection } = useConnection()
+  const { sendTransaction, connected } = useWallet()
+  const [signature, setSignature] = useState<string>()
   const [phase, setPhase] = useState<"idle" | "wallet" | "mining" | "done" | "error">("idle")
   const [errMsg, setErrMsg] = useState("")
-  const [contractAddress, setContractAddress] = useState<string | undefined>()
-
-  const { data: receipt, isSuccess } = useWaitForTransactionReceipt({ hash: txHash })
-
-  useEffect(() => {
-    if (isSuccess && phase === "mining") {
-      if (receipt?.contractAddress) setContractAddress(receipt.contractAddress)
-      setPhase("done")
-      if (txHash) onDone?.(txHash)
-    }
-  }, [isSuccess, phase, receipt, txHash, onDone])
 
   const execute = useCallback(async () => {
+    if (!connected) {
+      setErrMsg("Connect your wallet first.")
+      setPhase("error")
+      return
+    }
     setPhase("wallet")
     setErrMsg("")
     try {
-      let hash: Hex
-      if (action.action === "sendNative") {
-        hash = await sendTransactionAsync({ to: action.to as Hex, value: BigInt(action.valueWei || "0") })
-      } else if (action.action === "sendToken") {
-        hash = await writeContractAsync({
-          address: action.tokenAddress as Hex,
-          abi: ERC20_ABI,
-          functionName: "transfer",
-          args: [action.to as Hex, BigInt(action.amountWei || "0")],
-        })
-      } else if (action.action === "deployToken") {
-        if (!walletClient) throw new Error("Wallet not ready")
-        hash = await walletClient.deployContract({
-          abi: ASTRAX_TOKEN_ABI,
-          bytecode: ASTRAX_TOKEN_BYTECODE,
-          args: [action.name as string, action.symbol as string, BigInt(action.supply || "0")],
-        })
-      } else if (action.action === "mintNFT") {
-        hash = await writeContractAsync({
-          address: action.contract as Hex,
-          abi: ASTRAX_NFT_ABI,
-          functionName: "mint",
-          args: [action.to as Hex],
-        })
-      } else if (action.action === "deployNFT") {
-        if (!walletClient) throw new Error("Wallet not ready")
-        hash = await walletClient.deployContract({
-          abi: ASTRAX_NFT_ABI,
-          bytecode: ASTRAX_NFT_BYTECODE,
-          args: [action.name as string, action.symbol as string, action.baseURI || ""],
-        })
-      } else {
-        if (!walletClient) throw new Error("Wallet not ready")
-        const args = action.constructorArgs && action.constructorArgs.length ? action.constructorArgs : undefined
-        hash = await walletClient.deployContract({ abi: (action.abi as any) ?? [], bytecode: action.bytecode as Hex, args: args as any })
-      }
-      setTxHash(hash)
+      const tx = Transaction.from(Buffer.from(action.txBase64, "base64"))
+      // Refresh the blockhash in case the prepared one expired while displayed.
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized")
+      tx.recentBlockhash = blockhash
+      const sig = await sendTransaction(tx, connection)
+      setSignature(sig)
       setPhase("mining")
+      await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed")
+      setPhase("done")
+      onDone?.(sig)
     } catch (e: any) {
-      setErrMsg((e?.shortMessage || e?.message || "Transaction rejected").slice(0, 120))
+      setErrMsg((e?.message || "Transaction rejected").slice(0, 140))
       setPhase("error")
     }
-  }, [action, sendTransactionAsync, writeContractAsync, walletClient])
+  }, [action, connection, sendTransaction, connected, onDone])
 
   if (phase === "done") {
     return (
@@ -106,12 +62,12 @@ export function TxActionButton({ action, onDone }: { action: PendingAction; onDo
         <div className="flex items-center gap-2 text-sm font-medium text-green-700 dark:text-green-300">
           <CheckCircle2 className="w-4 h-4" /> Confirmed
         </div>
-        {contractAddress && (
-          <div className="mt-1 text-xs font-mono text-green-700 dark:text-green-300">Contract: {short(contractAddress)}</div>
+        {action.mint && (
+          <div className="mt-1 text-xs font-mono text-green-700 dark:text-green-300">Mint: {short(action.mint)}</div>
         )}
-        {txHash && (
-          <a href={explorerTx(txHash)} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs text-green-700 dark:text-green-300 hover:underline">
-            View on Sonic Explorer <ArrowUpRight className="w-3 h-3" />
+        {signature && (
+          <a href={explorerTx(signature)} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs text-green-700 dark:text-green-300 hover:underline">
+            View on Solana Explorer <ArrowUpRight className="w-3 h-3" />
           </a>
         )}
       </div>

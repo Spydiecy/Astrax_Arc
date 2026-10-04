@@ -1,14 +1,15 @@
 import { NextResponse } from "next/server"
-import { createWalletClient, http, parseEther, parseUnits, isAddress, type Hex } from "viem"
-import { privateKeyToAccount } from "viem/accounts"
-import { sonicTestnet, getPublicClient, RPC_URL, NATIVE_SYMBOL, ERC20_ABI, findToken } from "@/lib/sonic"
+import { PublicKey, sendAndConfirmTransaction } from "@solana/web3.js"
+import { getMint } from "@solana/spl-token"
+import { getConnection, NATIVE_SYMBOL, NATIVE_DECIMALS, findToken, NATIVE_SENTINEL, isNativeToken } from "@/lib/solana"
+import { keypairFromSecret, buildSolTransfer, buildTokenTransfer } from "@/lib/spl"
 import { getDueSchedules, updateAfterRun, clearKey } from "@/lib/db"
 import { decryptSecret } from "@/lib/crypto"
 
 export const runtime = "nodejs"
 export const maxDuration = 60
 
-const publicClient = getPublicClient()
+const connection = getConnection()
 
 // Runs due scheduled payments. Protected by CRON_SECRET in production; open in dev
 // so the in-app poller can trigger it locally.
@@ -23,36 +24,38 @@ async function run() {
         updateAfterRun(job.id, { status: "failed", note: "missing key" })
         continue
       }
-      const pk = decryptSecret(job.enc_key)
-      const account = privateKeyToAccount((pk.startsWith("0x") ? pk : `0x${pk}`) as Hex)
-      const wallet = createWalletClient({ account, chain: sonicTestnet, transport: http(RPC_URL) })
+      const secret = decryptSecret(job.enc_key)
+      const keypair = keypairFromSecret(secret)
+      const recipient = new PublicKey(job.recipient)
 
-      const isNative = !job.token || job.token.toUpperCase() === NATIVE_SYMBOL
-      let hash: Hex
-      if (isNative) {
-        hash = await wallet.sendTransaction({ to: job.recipient as Hex, value: parseEther(job.amount) })
+      let sig: string
+      if (isNativeToken(job.token)) {
+        const tx = await buildSolTransfer(connection, keypair.publicKey, recipient, job.amount)
+        sig = await sendAndConfirmTransaction(connection, tx, [keypair])
       } else {
         const info = findToken(job.token)
-        const tokenAddr = (info?.address && isAddress(info.address) ? info.address : job.token) as Hex
-        const decimals = info?.decimals ?? Number(await publicClient.readContract({ address: tokenAddr, abi: ERC20_ABI, functionName: "decimals" }))
-        hash = await wallet.writeContract({ address: tokenAddr, abi: ERC20_ABI, functionName: "transfer", args: [job.recipient as Hex, parseUnits(job.amount, decimals)] })
+        const mintStr = info?.address && info.address !== NATIVE_SENTINEL ? info.address : job.token
+        const mint = new PublicKey(mintStr)
+        const decimals = info?.decimals ?? (await getMint(connection, mint)).decimals
+        const tx = await buildTokenTransfer(connection, keypair.publicKey, recipient, mint, job.amount, decimals)
+        sig = await sendAndConfirmTransaction(connection, tx, [keypair])
       }
 
       const remaining = job.remaining - 1
       if (job.interval_secs > 0 && remaining > 0) {
-        updateAfterRun(job.id, { remaining, next_run: now + job.interval_secs * 1000, last_tx: hash })
+        updateAfterRun(job.id, { remaining, next_run: now + job.interval_secs * 1000, last_tx: sig })
       } else {
-        updateAfterRun(job.id, { remaining: Math.max(0, remaining), status: "done", last_tx: hash })
+        updateAfterRun(job.id, { remaining: Math.max(0, remaining), status: "done", last_tx: sig })
         clearKey(job.id) // wipe the stored key once there are no runs left
       }
-      results.push({ id: job.id, hash, remaining })
+      results.push({ id: job.id, hash: sig, remaining })
     } catch (e: any) {
-      updateAfterRun(job.id, { status: "failed", note: (e?.shortMessage || e?.message || "error").slice(0, 160) })
-      results.push({ id: job.id, error: e?.shortMessage || e?.message })
+      updateAfterRun(job.id, { status: "failed", note: (e?.message || "error").slice(0, 160) })
+      results.push({ id: job.id, error: e?.message })
     }
   }
 
-  return { ran: results.length, results, at: new Date(now).toISOString() }
+  return { ran: results.length, results, at: new Date(now).toISOString(), symbol: NATIVE_SYMBOL, decimals: NATIVE_DECIMALS }
 }
 
 function authorized(req: Request): boolean {

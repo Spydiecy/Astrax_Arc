@@ -1,18 +1,11 @@
-// Server-only "explain anything" engine — viem-first (no explorer API key needed).
-// Give it a tx hash or an address and it returns a structured, human-readable
-// breakdown + risk flags. Calldata is decoded against a local ABI dictionary
-// (covers the common ERC-20/721 + DEX calls), with a validated 4byte.directory
-// fallback for exotic selectors. Address classification is done via on-chain reads.
-import {
-  formatEther,
-  isAddress,
-  parseAbi,
-  decodeFunctionData,
-  toFunctionSelector,
-  type Hex,
-  type AbiFunction,
-} from "viem"
-import { getPublicClient, NATIVE_SYMBOL, ERC20_ABI, explorerTx, explorerAddress } from "./sonic"
+// Server-only "explain anything" engine for Solana. Give it a transaction
+// signature or an account address and it returns a structured, human-readable
+// breakdown + risk flags. Account classification is done via on-chain reads.
+import { PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js"
+import { getConnection, NATIVE_SYMBOL, explorerTx, explorerAddress, isValidAddress } from "./solana"
+
+const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 
 export type RiskLevel = "high" | "medium" | "info"
 export interface Risk {
@@ -33,216 +26,152 @@ export interface ExplainResult {
 
 const short = (a?: string) => (typeof a === "string" && a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a || "")
 
-// ── Local calldata dictionary ───────────────────────────────────────────────
-const KNOWN_SIGS = [
-  "function transfer(address to, uint256 amount)",
-  "function transferFrom(address from, address to, uint256 amount)",
-  "function approve(address spender, uint256 amount)",
-  "function safeTransferFrom(address from, address to, uint256 tokenId)",
-  "function safeTransferFrom(address from, address to, uint256 tokenId, bytes data)",
-  "function setApprovalForAll(address operator, bool approved)",
-  "function mint(address to)",
-  "function mint(address to, uint256 amount)",
-  "function burn(uint256 amount)",
-  "function deposit()",
-  "function withdraw(uint256 amount)",
-  "function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline)",
-  "function swapExactETHForTokens(uint256 amountOutMin, address[] path, address to, uint256 deadline)",
-]
-const KNOWN_ABI = parseAbi(KNOWN_SIGS)
-const SELECTORS = new Map<string, AbiFunction>()
-for (const item of KNOWN_ABI as readonly AbiFunction[]) {
-  if (item.type === "function") {
-    try {
-      SELECTORS.set(toFunctionSelector(item).toLowerCase(), item)
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function fmtArg(v: any): string {
-  if (typeof v === "bigint") return v.toString()
-  if (Array.isArray(v)) return v.map(fmtArg).join(", ")
-  return String(v)
-}
-
-interface Decoded {
-  name: string
-  params: { name: string; type: string; value: string }[]
-}
-
-function decodeKnown(input: Hex): Decoded | null {
-  if (!input || input.length < 10) return null
-  const sel = input.slice(0, 10).toLowerCase()
-  const item = SELECTORS.get(sel)
-  if (!item) return null
-  try {
-    const { functionName, args } = decodeFunctionData({ abi: KNOWN_ABI, data: input })
-    return {
-      name: functionName,
-      params: (item.inputs || []).map((inp, i) => ({ name: inp.name || `arg${i}`, type: inp.type, value: fmtArg((args as unknown[])[i]) })),
-    }
-  } catch {
-    return null
-  }
-}
-
-async function decode4byte(input: Hex): Promise<Decoded | null> {
-  try {
-    const sel = input.slice(0, 10)
-    const res = await fetch(`https://www.4byte.directory/api/v1/signatures/?hex_signature=${sel}`, { headers: { accept: "application/json" } })
-    if (!res.ok) return null
-    const j = await res.json()
-    const sigs: string[] = (j.results || []).map((r: { text_signature: string }) => r.text_signature)
-    for (const sig of sigs) {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const abi = parseAbi([`function ${sig}`] as any)
-        const { functionName, args } = decodeFunctionData({ abi, data: input })
-        const item = (abi as readonly AbiFunction[]).find((x) => x.type === "function")!
-        return { name: functionName, params: (item.inputs || []).map((inp, i) => ({ name: inp.name || `arg${i}`, type: inp.type, value: fmtArg((args as unknown[])[i]) })) }
-      } catch {
-        /* try next candidate */
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return null
-}
-
-function approvalRisk(d: Decoded): Risk | null {
-  if (!/approve|setApprovalForAll/i.test(d.name)) return null
-  if (/setApprovalForAll/i.test(d.name) && d.params.some((p) => p.type === "bool" && p.value === "true")) {
-    return { level: "high", text: "Approves an operator for ALL your NFTs in this collection. Only do this for trusted marketplaces." }
-  }
-  const amt = d.params.find((p) => p.type.startsWith("uint"))
-  if (amt && /^\d+$/.test(amt.value) && amt.value.length >= 30) {
-    return { level: "high", text: "Very large (likely unlimited) token approval — the spender could move your tokens anytime. Revoke if you don't recognise it." }
-  }
-  return null
-}
-
 export async function explainTarget(target: string): Promise<ExplainResult | { error: string }> {
   const t = target.trim()
-  if (/^0x[0-9a-fA-F]{64}$/.test(t)) return explainTx(t as Hex)
-  if (isAddress(t)) return explainAddress(t)
-  return { error: "Paste a transaction hash (0x + 64 hex) or an address (0x + 40 hex) and I'll break it down." }
+  // Signatures are 64-byte base58 (~87-88 chars); addresses are 32-byte (32-44 chars).
+  if (t.length > 50) return explainTx(t)
+  if (isValidAddress(t)) return explainAddress(t)
+  return { error: "Paste a transaction signature or an account address and I'll break it down." }
 }
 
-async function explainTx(hash: Hex): Promise<ExplainResult | { error: string }> {
-  const client = getPublicClient()
+async function explainTx(signature: string): Promise<ExplainResult | { error: string }> {
+  const connection = getConnection()
   let tx
   try {
-    tx = await client.getTransaction({ hash })
+    tx = await connection.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 })
   } catch {
-    return { error: "I couldn't find that transaction on Sonic Testnet." }
+    tx = null
   }
-  const receipt = await client.getTransactionReceipt({ hash }).catch(() => null)
-  const toCode = tx.to ? await client.getCode({ address: tx.to }).catch(() => undefined) : undefined
-  const toIsContract = !!toCode && toCode !== "0x"
-  const ok = receipt ? receipt.status === "success" : undefined
+  if (!tx) return { error: "I couldn't find that transaction on this cluster." }
 
-  let decoded: Decoded | null = null
-  if (tx.input && tx.input !== "0x") decoded = decodeKnown(tx.input) || (await decode4byte(tx.input))
+  const ok = !tx.meta?.err
+  const keys = tx.transaction.message.accountKeys
+  const from = keys[0]?.pubkey.toBase58()
+  const instructions = tx.transaction.message.instructions as any[]
+  const programs = Array.from(new Set(instructions.map((i) => i.program || i.programId?.toBase58?.() || String(i.programId))))
+  const pre = tx.meta?.preBalances?.[0] ?? 0
+  const post = tx.meta?.postBalances?.[0] ?? 0
+  const moved = Math.abs(pre - post) / LAMPORTS_PER_SOL
+  const fee = (tx.meta?.fee ?? 0) / LAMPORTS_PER_SOL
 
   const risks: Risk[] = []
-  if (ok === false) risks.push({ level: "high", text: "This transaction reverted — it did not complete." })
-  if (decoded) {
-    const ar = approvalRisk(decoded)
-    if (ar) risks.push(ar)
-  }
-  if (toIsContract) risks.push({ level: "info", text: "Interacts with a contract. Always confirm you trust it before signing similar calls." })
-  if (!risks.length) risks.push({ level: "info", text: "A plain value transfer — nothing unusual." })
+  if (!ok) risks.push({ level: "high", text: "This transaction failed — it did not complete." })
+  if (programs.some((p) => /token/i.test(p))) risks.push({ level: "info", text: "Interacts with the token program (transfer / mint / account changes)." })
+  if (!risks.length) risks.push({ level: "info", text: "A standard transaction — nothing unusual." })
 
   const fields: ExplainResult["fields"] = [
-    { label: "Status", value: receipt ? (ok ? "Success" : "Failed") : "Pending" },
-    { label: "From", value: short(tx.from), mono: true },
-    { label: "To", value: `${short(tx.to ?? "(contract creation)")}${toIsContract ? " · contract" : ""}`, mono: true },
-    { label: "Value", value: `${formatEther(tx.value)} ${NATIVE_SYMBOL}` },
-    { label: "Block", value: tx.blockNumber?.toString() ?? "pending" },
+    { label: "Status", value: ok ? "Success" : "Failed" },
+    { label: "Fee payer", value: short(from), mono: true },
+    { label: "Value moved", value: `${moved.toFixed(6)} ${NATIVE_SYMBOL}` },
+    { label: "Fee", value: `${fee.toFixed(6)} ${NATIVE_SYMBOL}` },
+    { label: "Slot", value: tx.slot?.toString() ?? "—" },
+    { label: "Instructions", value: String(instructions.length) },
   ]
-  if (receipt?.gasUsed) fields.push({ label: "Gas used", value: receipt.gasUsed.toString() })
 
-  const verb = decoded ? `called \`${decoded.name}\`` : tx.input && tx.input !== "0x" ? "made a contract call" : "transferred value"
   return {
     kind: "explain",
     type: "transaction",
-    target: hash,
+    target: signature,
     title: "Transaction",
-    summary: `${short(tx.from)} ${verb}${tx.to ? ` on ${short(tx.to)}` : ""}${tx.value > 0n ? `, sending ${formatEther(tx.value)} ${NATIVE_SYMBOL}` : ""}.`,
+    summary: `${short(from)} submitted a transaction with ${instructions.length} instruction${instructions.length === 1 ? "" : "s"}${moved > 0 ? `, moving ${moved.toFixed(4)} ${NATIVE_SYMBOL}` : ""}.`,
     fields,
-    method: decoded ?? undefined,
+    method: programs.length
+      ? { name: "functions", params: programs.map((p) => ({ name: short(p), type: "program", value: p })) }
+      : undefined,
     risks,
-    explorerUrl: explorerTx(hash),
+    explorerUrl: explorerTx(signature),
   }
 }
 
-const I165_ABI = parseAbi(["function supportsInterface(bytes4) view returns (bool)"])
-
 async function explainAddress(addr: string): Promise<ExplainResult | { error: string }> {
-  const client = getPublicClient()
-  const code = await client.getCode({ address: addr as Hex }).catch(() => undefined)
-  const isContract = !!code && code !== "0x"
+  const connection = getConnection()
+  const pubkey = new PublicKey(addr)
+  const info = await connection.getParsedAccountInfo(pubkey).catch(() => null)
+  const value = info?.value
+  const lamports = value?.lamports ?? 0
+  const balance = lamports / LAMPORTS_PER_SOL
+  const owner = value?.owner?.toBase58()
 
-  if (!isContract) {
-    const [bal, nonce] = await Promise.all([
-      client.getBalance({ address: addr as Hex }).catch(() => 0n),
-      client.getTransactionCount({ address: addr as Hex }).catch(() => 0),
-    ])
+  // Executable account → a program.
+  if (value?.executable) {
     return {
       kind: "explain",
-      type: "wallet",
+      type: "contract",
       target: addr,
-      title: "Wallet",
-      summary: `A regular wallet (EOA) holding ${formatEther(bal)} ${NATIVE_SYMBOL}.`,
+      title: "Program",
+      summary: "An on-chain program (smart contract) on Solana.",
       fields: [
-        { label: "Type", value: "Wallet (EOA)" },
-        { label: "Balance", value: `${formatEther(bal)} ${NATIVE_SYMBOL}` },
-        { label: "Tx sent", value: String(nonce) },
+        { label: "Type", value: "Program (executable)" },
+        { label: "Owner (loader)", value: short(owner), mono: true },
+        { label: "Balance", value: `${balance.toFixed(4)} ${NATIVE_SYMBOL}` },
       ],
-      risks: [{ level: "info", text: "This is a normal wallet address, not a contract." }],
+      risks: [
+        { level: "medium", text: "Review the program's source/verification before trusting it with funds." },
+        { level: "info", text: "Only interact with programs you trust." },
+      ],
       explorerUrl: explorerAddress(addr),
     }
   }
 
-  // Contract — classify via on-chain reads.
-  const read = async (fn: string) => {
-    try {
-      return await client.readContract({ address: addr as Hex, abi: ERC20_ABI, functionName: fn as never })
-    } catch {
-      return undefined
+  // Token program owned → mint or token account.
+  const data: any = value?.data
+  const parsed = data && typeof data === "object" && "parsed" in data ? data.parsed : null
+  if (owner === TOKEN_PROGRAM || owner === TOKEN_2022_PROGRAM) {
+    if (parsed?.type === "mint") {
+      const supply = parsed.info?.supply
+      const decimals = parsed.info?.decimals
+      const uiSupply = supply != null && decimals != null ? Number(supply) / 10 ** decimals : undefined
+      return {
+        kind: "explain",
+        type: "contract",
+        target: addr,
+        title: "Token mint",
+        summary: "An SPL token mint on Solana.",
+        fields: [
+          { label: "Type", value: "SPL token mint" },
+          { label: "Decimals", value: String(decimals ?? "—") },
+          ...(uiSupply != null ? [{ label: "Supply", value: uiSupply.toLocaleString() }] : []),
+          { label: "Mint authority", value: short(parsed.info?.mintAuthority) || "none", mono: true },
+        ],
+        risks: [
+          ...(parsed.info?.mintAuthority ? [{ level: "medium" as const, text: "This mint still has a mint authority — supply can be increased." }] : []),
+          { level: "info", text: "Verify the mint before trading or holding it." },
+        ],
+        explorerUrl: explorerAddress(addr),
+      }
+    }
+    if (parsed?.type === "account") {
+      return {
+        kind: "explain",
+        type: "contract",
+        target: addr,
+        title: "Token account",
+        summary: "An SPL token account holding a balance for a mint.",
+        fields: [
+          { label: "Type", value: "SPL token account" },
+          { label: "Mint", value: short(parsed.info?.mint), mono: true },
+          { label: "Owner", value: short(parsed.info?.owner), mono: true },
+          { label: "Amount", value: String(parsed.info?.tokenAmount?.uiAmountString ?? "—") },
+        ],
+        risks: [{ level: "info", text: "A token account is a holding account for a specific mint." }],
+        explorerUrl: explorerAddress(addr),
+      }
     }
   }
-  const [name, symbol, decimals, totalSupply] = await Promise.all([read("name"), read("symbol"), read("decimals"), read("totalSupply")])
-  const isErc721 = await client
-    .readContract({ address: addr as Hex, abi: I165_ABI, functionName: "supportsInterface", args: ["0x80ac58cd"] })
-    .catch(() => false)
 
-  const fields: ExplainResult["fields"] = [{ label: "Type", value: isErc721 ? "NFT contract (ERC-721)" : symbol ? "Token contract (ERC-20)" : "Contract" }]
-  if (name) fields.push({ label: "Name", value: `${name}${symbol ? ` (${symbol})` : ""}` })
-  if (!isErc721 && decimals !== undefined) fields.push({ label: "Decimals", value: String(decimals) })
-  if (!isErc721 && totalSupply !== undefined && decimals !== undefined)
-    fields.push({ label: "Total supply", value: (Number(totalSupply as bigint) / 10 ** Number(decimals)).toLocaleString() })
-
-  const risks: Risk[] = [
-    { level: "medium", text: "Source verification can't be confirmed without an explorer API key — review the contract on the explorer before trusting it." },
-    { level: "info", text: "Only approve or send to this contract if you trust it." },
-  ]
-
-  const kind = isErc721 ? "NFT contract" : symbol ? "Token contract" : "Contract"
+  // Otherwise, a regular wallet (system account).
   return {
     kind: "explain",
-    type: "contract",
+    type: "wallet",
     target: addr,
-    title: kind,
-    summary: name
-      ? `${name}${symbol ? ` (${symbol})` : ""} — a${isErc721 ? "n ERC-721 NFT" : "n ERC-20 token"} contract on Sonic Testnet.`
-      : "A smart contract on Sonic Testnet.",
-    fields,
-    risks,
+    title: "Wallet",
+    summary: `A regular wallet account holding ${balance.toFixed(4)} ${NATIVE_SYMBOL}.`,
+    fields: [
+      { label: "Type", value: "Wallet (system account)" },
+      { label: "Balance", value: `${balance.toFixed(4)} ${NATIVE_SYMBOL}` },
+      { label: "Owner", value: short(owner) || "System Program", mono: true },
+    ],
+    risks: [{ level: "info", text: "This is a normal wallet address, not a program." }],
     explorerUrl: explorerAddress(addr),
   }
 }

@@ -2,7 +2,7 @@
 
 import { useChat } from "@ai-sdk/react"
 import { useEffect, useRef, useState } from "react"
-import { useAccount } from "wagmi"
+import { useWallet } from "@solana/wallet-adapter-react"
 import {
   Bot, User, Send, Mic, MicOff, Loader2, Wallet, ArrowUpRight, Coins,
   Boxes, LineChart, Link2, Copy, Check, CalendarClock, FileText, Rocket,
@@ -19,9 +19,8 @@ import CandlestickChart from "@/components/ui/candlestick-chart"
 import { AgentSteps } from "@/components/ui/agent-steps"
 import { uploadFileToIPFS } from "@/lib/pinata"
 import { getCurrentId, newChat, getMessages, saveMessages } from "@/lib/chat-history"
+import { explorerTx } from "@/lib/solana"
 import type { Message } from "@ai-sdk/react"
-
-const EXPLORER = "https://explorer.testnet.soniclabs.com"
 
 // ── Minimal markdown renderer (bold / code / lists / breaks) ────────────────────
 function Markdown({ text }: { text: string }) {
@@ -164,7 +163,7 @@ function ToolCard({ result }: { result: any }) {
           {result.blockNumber && <Field label="Block">{result.blockNumber}</Field>}
           {result.gasUsed && <Field label="Gas Used">{result.gasUsed}</Field>}
           <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
-            View on Sonic Explorer <ArrowUpRight className="w-3.5 h-3.5" />
+            View on Solana Explorer <ArrowUpRight className="w-3.5 h-3.5" />
           </a>
         </CardShell>
       )
@@ -221,14 +220,14 @@ function ToolCard({ result }: { result: any }) {
               <p className="text-sm text-gray-500">{result.note || "No recent transactions."}</p>
             )}
             {result.transactions.map((t: any) => (
-              <a key={t.hash} href={`${EXPLORER}/tx/${t.hash}`} target="_blank" rel="noreferrer" className="block rounded border border-gray-200 dark:border-gray-800 p-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-900">
+              <a key={t.hash} href={explorerTx(t.hash)} target="_blank" rel="noreferrer" className="block rounded border border-gray-200 dark:border-gray-800 p-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-900">
                 <div className="flex justify-between"><span className="font-mono text-xs">{short(t.hash)}</span><span className="text-gray-500">{t.value}</span></div>
                 <div className="text-xs text-gray-500">{short(t.from)} → {short(t.to)}</div>
               </a>
             ))}
             {result.explorerUrl && (
               <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
-                View on Sonic Explorer <ArrowUpRight className="w-3.5 h-3.5" />
+                View on Solana Explorer <ArrowUpRight className="w-3.5 h-3.5" />
               </a>
             )}
           </div>
@@ -248,7 +247,7 @@ function ToolCard({ result }: { result: any }) {
             <span className="font-mono text-xs flex items-center gap-1">{short(result.contractAddress)} <CopyBtn value={result.contractAddress || ""} /></span>
           </div>
           <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
-            View on Sonic Explorer <ArrowUpRight className="w-3.5 h-3.5" />
+            View on Solana Explorer <ArrowUpRight className="w-3.5 h-3.5" />
           </a>
         </CardShell>
       )
@@ -379,7 +378,7 @@ function ToolCard({ result }: { result: any }) {
             </div>
           )}
           <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
-            View on Sonic Explorer <ArrowUpRight className="w-3.5 h-3.5" />
+            View on Solana Explorer <ArrowUpRight className="w-3.5 h-3.5" />
           </a>
         </CardShell>
       )
@@ -398,26 +397,26 @@ function ToolCard({ result }: { result: any }) {
   }
 }
 
-const WELCOME = `Hey, I'm **Astrax** 👋 — your AI agent for the **Sonic Testnet**.
+const WELCOME = `Hey, I'm **Astrax** 👋 — your AI agent for **Solana**.
 
 Try things like:
-- "What's my **S** balance?"
-- "Send **1 S** to \`0x…\`"
+- "What's my **SOL** balance?"
+- "Send **1 SOL** to \`<address>\`"
 - "Create a token **MoonCoin MOON** supply **1000000**"
-- "Show the **latest blocks**" or "**S** market data"
-- "Create a **payment link** for 0.5 S"
-- "Schedule **2 S** to \`0x…\` **in 10 minutes**"
+- "Show the **latest blocks**" or "**SOL** market data"
+- "Create a **payment link** for 0.5 SOL"
+- "Schedule **2 SOL** to \`<address>\` **in 10 minutes**"
 
-Pick a signing mode in the sidebar **Signing** panel — connect a **wallet** (approve each txn with a button) or go **autonomous** with a private key. Tap **How it works** anytime for the tour.`
+Pick a signing mode in the sidebar **Signing** panel — connect a **wallet** (approve each txn with a button) or go **autonomous** with a secret key. Tap **How it works** anytime for the tour.`
 
 const SUGGESTIONS = [
-  { icon: <Wallet className="w-3.5 h-3.5" />, label: "Check my S balance", prompt: "What's my S balance?" },
-  { icon: <LineChart className="w-3.5 h-3.5" />, label: "S price chart", prompt: "Show me the S price chart for the last 7 days" },
+  { icon: <Wallet className="w-3.5 h-3.5" />, label: "Check my SOL balance", prompt: "What's my SOL balance?" },
+  { icon: <LineChart className="w-3.5 h-3.5" />, label: "SOL price chart", prompt: "Show me the SOL price chart for the last 7 days" },
   { icon: <Rocket className="w-3.5 h-3.5" />, label: "Create a token", prompt: "Create a token called MoonCoin with symbol MOON and supply 1000000" },
-  { icon: <Code className="w-3.5 h-3.5" />, label: "Workflow diagram", prompt: "Draw a workflow diagram for a basic ERC-20 token contract" },
-  { icon: <Link2 className="w-3.5 h-3.5" />, label: "Payment link", prompt: "Create a payment link for 0.5 S" },
-  { icon: <Boxes className="w-3.5 h-3.5" />, label: "Latest blocks", prompt: "Show me the latest blocks on Sonic" },
-  { icon: <ShieldCheck className="w-3.5 h-3.5" />, label: "Explain a contract", prompt: "Explain this contract and tell me if it's safe: 0xB7a8307A474A2227050c34212Ef84783ece5876f" },
+  { icon: <Code className="w-3.5 h-3.5" />, label: "Workflow diagram", prompt: "Draw a workflow diagram for minting an SPL token" },
+  { icon: <Link2 className="w-3.5 h-3.5" />, label: "Payment link", prompt: "Create a payment link for 0.5 SOL" },
+  { icon: <Boxes className="w-3.5 h-3.5" />, label: "Latest blocks", prompt: "Show me the latest blocks on Solana" },
+  { icon: <ShieldCheck className="w-3.5 h-3.5" />, label: "Explain an address", prompt: "Explain this address and tell me if it's safe: So11111111111111111111111111111111111111112" },
 ]
 
 // Outer manager: owns the active chat id and swaps the keyed session on open.
@@ -442,7 +441,8 @@ export default function AstraxChatPage() {
 
 function ChatSession({ chatId }: { chatId: string }) {
   const { privateKey, signingMode } = useCredentials()
-  const { address } = useAccount()
+  const { publicKey } = useWallet()
+  const address = publicKey?.toBase58() ?? null
   const [isRecording, setIsRecording] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [files, setFiles] = useState<File[]>([])

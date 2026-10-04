@@ -82,7 +82,7 @@ export async function addAsset(a: StoredAsset): Promise<void> {
 
 export async function listAssets(owner: string): Promise<StoredAsset[]> {
   const db = await read()
-  return db.assets.filter((a) => a.owner.toLowerCase() === owner.toLowerCase())
+  return db.assets.filter((a) => a.owner === owner)
 }
 
 // ── Scheduled transfers ──────────────────────────────────────────────────────
@@ -101,5 +101,5 @@ export async function updateSchedule(id: string, patch: Partial<ScheduledTransfe
 
 export async function listSchedules(owner: string): Promise<ScheduledTransfer[]> {
   const db = await read()
-  return db.schedules.filter((s) => s.owner.toLowerCase() === owner.toLowerCase())
+  return db.schedules.filter((s) => s.owner === owner)
 }

@@ -24,7 +24,7 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
       body: (
         <div className="space-y-3 text-sm text-gray-600 dark:text-gray-300">
           <p>
-            Astrax is your AI agent for the <strong className="text-black dark:text-white">Sonic Testnet</strong>.
+            Astrax is your AI agent for <strong className="text-black dark:text-white">Solana</strong>.
             Just chat in plain English and it turns your words into real on-chain actions.
           </p>
           <div className="grid grid-cols-2 gap-2 pt-1">
@@ -68,9 +68,9 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
               <Zap className="w-4 h-4" /> Autonomous mode
             </div>
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Paste a private key (your address is derived automatically). Astrax signs for you — no
+              Paste a secret key (your address is derived automatically). Astrax signs for you — no
               popups — which unlocks hands-free features like <strong>scheduled payments</strong>.
-              Testnet only; the key is never stored or put in the prompt.
+              Devnet only; the key is never stored or put in the prompt.
             </p>
           </div>
         </div>
@@ -82,13 +82,13 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
       body: (
         <div className="space-y-2">
           {[
-            "What's my S balance?",
-            "Send 1 S to 0x1234…abcd",
+            "What's my SOL balance?",
+            "Send 1 SOL to <address>",
             "Create a token MoonCoin MOON supply 1000000",
-            "Make a payment link for 0.5 S",
-            "Show the S price chart",
-            "Draw a workflow diagram for an ERC-20 token",
-            "Schedule 2 S to 0x… in 10 minutes",
+            "Make a payment link for 0.5 SOL",
+            "Show the SOL price chart",
+            "Draw a workflow diagram for minting an SPL token",
+            "Schedule 2 SOL to <address> in 10 minutes",
           ].map((ex) => (
             <div key={ex} className="rounded-lg bg-gray-100 dark:bg-gray-900 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 font-mono">
               “{ex}”

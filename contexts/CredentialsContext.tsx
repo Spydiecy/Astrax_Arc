@@ -1,16 +1,17 @@
 "use client"
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from "react"
-import { useAccount } from "wagmi"
-import { privateKeyToAccount } from "viem/accounts"
+import { useWallet } from "@solana/wallet-adapter-react"
+import { Keypair } from "@solana/web3.js"
+import bs58 from "bs58"
 
 export type SigningMode = "auto" | "wallet"
 
 interface CredentialsContextType {
-  /** Raw private key the user optionally pastes (autonomous mode). */
+  /** Raw secret key the user optionally pastes (autonomous mode). */
   privateKey: string
   setPrivateKey: (key: string) => void
-  /** Address derived from the private key (null if key is empty/invalid). */
+  /** Address derived from the secret key (null if key is empty/invalid). */
   derivedAddress: string | null
   hasPrivateKey: boolean
   /** How transactions are signed: server-side with the key, or in the user's wallet. */
@@ -22,13 +23,13 @@ interface CredentialsContextType {
 
 const CredentialsContext = createContext<CredentialsContextType | undefined>(undefined)
 
+/** Derive a Solana public key from a base58 secret key or a JSON byte array. */
 function deriveAddress(key: string): string | null {
   const trimmed = key.trim()
   if (!trimmed) return null
   try {
-    const pk = (trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`) as `0x${string}`
-    if (pk.length !== 66) return null
-    return privateKeyToAccount(pk).address
+    const secret = trimmed.startsWith("[") ? Uint8Array.from(JSON.parse(trimmed)) : bs58.decode(trimmed)
+    return Keypair.fromSecretKey(secret).publicKey.toBase58()
   } catch {
     return null
   }
@@ -39,7 +40,8 @@ export function CredentialsProvider({ children }: { children: ReactNode }) {
   const [derivedAddress, setDerivedAddress] = useState<string | null>(null)
   const [signingMode, setSigningModeState] = useState<SigningMode>("wallet")
 
-  const { address, isConnected } = useAccount()
+  const { publicKey, connected } = useWallet()
+  const address = publicKey?.toBase58() ?? null
 
   // Load persisted state on mount
   useEffect(() => {
@@ -66,7 +68,7 @@ export function CredentialsProvider({ children }: { children: ReactNode }) {
 
   const hasPrivateKey = Boolean(derivedAddress)
   const activeAddress =
-    signingMode === "auto" ? derivedAddress : isConnected ? address ?? null : null
+    signingMode === "auto" ? derivedAddress : connected ? address : null
 
   return (
     <CredentialsContext.Provider

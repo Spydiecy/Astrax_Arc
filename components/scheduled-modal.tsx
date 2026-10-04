@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useState } from "react"
 import { CalendarClock, X, Loader2, Trash2, ArrowUpRight, RefreshCw } from "lucide-react"
 import { useCredentials } from "@/contexts/CredentialsContext"
+import { explorerTx } from "@/lib/solana"
 
-const EXPLORER = "https://explorer.testnet.soniclabs.com"
 const short = (a?: string) => (a && a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a || "")
 
 interface Schedule {
@@ -84,7 +84,7 @@ export function ScheduledModal({ isOpen, onClose }: { isOpen: boolean; onClose: 
             <div className="flex items-center gap-2 text-sm text-gray-500"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
           )}
           {activeAddress && !loading && items.length === 0 && (
-            <p className="text-sm text-gray-500">No scheduled payments yet. Try: “pay 1 S to 0x… every week for 4 weeks”.</p>
+            <p className="text-sm text-gray-500">No scheduled payments yet. Try: “pay 1 SOL to &lt;address&gt; every week for 4 weeks”.</p>
           )}
           {items.map((s) => (
             <div key={s.id} className="rounded-lg border border-gray-200 dark:border-gray-800 p-3 text-sm">
@@ -99,7 +99,7 @@ export function ScheduledModal({ isOpen, onClose }: { isOpen: boolean; onClose: 
               </div>
               <div className="flex items-center gap-3 mt-2">
                 {s.lastTx && (
-                  <a href={`${EXPLORER}/tx/${s.lastTx}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline">
+                  <a href={explorerTx(s.lastTx)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline">
                     Last tx <ArrowUpRight className="w-3 h-3" />
                   </a>
                 )}

@@ -83,7 +83,7 @@ export function HeroSection() {
                                     <Link
                                         href="#link"
                                         className="hover:bg-background dark:hover:border-t-border bg-muted group mx-auto flex w-fit items-center gap-4 rounded-full border p-1 pl-4 shadow-md shadow-black/5 transition-all duration-300 dark:border-t-white/5 dark:shadow-zinc-950">
-                                        <span className="text-foreground text-sm">🚀 Astrax now supports Sonic Testnet with S</span>
+                                        <span className="text-foreground text-sm">🚀 Astrax now runs on Solana with SOL</span>
                                         <span className="dark:border-background block h-4 w-0.5 border-l bg-white dark:bg-zinc-700"></span>
 
                                         <div className="bg-background group-hover:bg-muted size-6 overflow-hidden rounded-full duration-500">
@@ -100,11 +100,11 @@ export function HeroSection() {
                         
                                     <h1
                                         className="mt-8 max-w-4xl mx-auto text-balance text-6xl md:text-7xl lg:mt-16 xl:text-[5.25rem]">
-                                        <span className="text-red-400">Astrax</span> AI Agent for Sonic Testnet
+                                        <span className="text-red-400">Astrax</span> AI Agent for Solana
                                     </h1>
                                     <p
                                         className="mx-auto mt-8 max-w-2xl text-balance text-lg">
-                                        Deploy contracts, create tokens, schedule payments, and interact with Sonic chain testnet using simple chat commands. Experience lightning-fast DeFi with the fastest Layer 1.
+                                        Create tokens, send payments, schedule transfers, and explore the chain using simple chat commands. Experience lightning-fast, low-fee transactions.
                                     </p>
                                 </AnimatedGroup>
 
@@ -206,7 +206,7 @@ export function HeroSection() {
                                     </svg>
                                 </div>
                                 <h3 className="mb-2 text-xl font-semibold">One-Command Operations</h3>
-                                <p className="text-muted-foreground">Deploy smart contracts, create tokens, and mint NFTs with simple chat commands on Sonic Testnet.</p>
+                                <p className="text-muted-foreground">Create tokens, send payments, and mint NFTs with simple chat commands on Solana.</p>
                             </div>
                             
                             {/* Feature 2 */}
@@ -246,7 +246,7 @@ export function HeroSection() {
                                     </svg>
                                 </div>
                                 <h3 className="mb-2 text-xl font-semibold">Real-time Market Data</h3>
-                                <p className="text-muted-foreground">Access live S prices and market insights powered by integrated DEX aggregation.</p>
+                                <p className="text-muted-foreground">Access live SOL prices and market insights powered by integrated price feeds.</p>
                             </div>
                             
                             {/* Feature 5 */}
@@ -259,7 +259,7 @@ export function HeroSection() {
                                     </svg>
                                 </div>
                                 <h3 className="mb-2 text-xl font-semibold">Secure Credential System</h3>
-                                <p className="text-muted-foreground">Military-grade encryption for wallet credentials with autonomous AI agent access for instant operations on Sonic Testnet.</p>
+                                <p className="text-muted-foreground">Military-grade encryption for wallet credentials with autonomous AI agent access for instant operations on Solana.</p>
                             </div>
                             
                             {/* Feature 6 */}
@@ -285,7 +285,7 @@ export function HeroSection() {
                             <div>
                                 <h2 className="mb-4 text-4xl font-bold md:text-5xl">Powered by Advanced AI</h2>
                                 <p className="mb-6 text-muted-foreground">
-                                    Astrax employs cutting-edge technology designed for performance, security, and seamless blockchain interactions on Sonic Testnet.
+                                    Astrax employs cutting-edge technology designed for performance, security, and seamless blockchain interactions on Solana.
                                 </p>
                                 
                                 <ul className="space-y-4">
@@ -296,7 +296,7 @@ export function HeroSection() {
                                                 <polyline points="22 4 12 14.01 9 11.01"/>
                                             </svg>
                                         </div>
-                                        <span><strong>Frontend:</strong> Next.js 14 with TypeScript and RainbowKit wallet integration</span>
+                                        <span><strong>Frontend:</strong> Next.js with TypeScript and Solana Wallet Adapter integration</span>
                                     </li>
                                     <li className="flex items-start gap-2">
                                         <div className="flex-shrink-0 text-primary">
@@ -314,7 +314,7 @@ export function HeroSection() {
                                                 <polyline points="22 4 12 14.01 9 11.01"/>
                                             </svg>
                                         </div>
-                                        <span><strong>Blockchain:</strong> Sonic Testnet with CosmWasm smart contracts</span>
+                                        <span><strong>Blockchain:</strong> Solana with SPL tokens and on-chain programs</span>
                                     </li>
                                     <li className="flex items-start gap-2">
                                         <div className="flex-shrink-0 text-primary">
@@ -371,7 +371,7 @@ export function HeroSection() {
                                         <span className="text-4xl font-bold">0.1 S</span>
                                         <span className="text-muted-foreground ml-2">one-time</span>
                                     </div>
-                                    <p className="text-muted-foreground">Full platform access on Sonic testnet</p>
+                                    <p className="text-muted-foreground">Full platform access on Solana devnet</p>
                                 </div>
                                 
                                 <ul className="mb-8 space-y-3 text-sm">
@@ -429,7 +429,7 @@ export function HeroSection() {
                         
                         <div className="mt-12 text-center">
                                 <p className="text-muted-foreground text-sm">
-                                    🚀 More pricing plans coming soon for Sonic mainnet launch
+                                    🚀 More pricing plans coming soon for Solana mainnet launch
                                 </p>
                         </div>
                     </div>
@@ -476,7 +476,7 @@ export function HeroSection() {
                             <div className="md:col-span-2">
                                 <Logo className="mb-4" />
                                 <p className="mb-4 max-w-xs text-muted-foreground">
-                                    Your AI agent for seamless blockchain interactions on Sonic Testnet.
+                                    Your AI agent for seamless blockchain interactions on Solana.
                                 </p>
                                 <div className="flex space-x-4">
                                     <a href="#" className="text-muted-foreground hover:text-foreground transition-colors">
@@ -523,7 +523,7 @@ export function HeroSection() {
                         
                         <div className="mt-10 border-t pt-6">
                             <p className="text-center text-xs text-muted-foreground">
-                                © {new Date().getFullYear()} Astrax. All rights reserved. Built for Sonic Testnet with ❤️
+                                © {new Date().getFullYear()} Astrax. All rights reserved. Built for Solana with ❤️
                             </p>
                         </div>
                     </div>
@@ -625,7 +625,7 @@ const Logo = ({ className }: { className?: string }) => {
         <div className={cn('flex items-center gap-2', className)}>
             <img 
                 src="/logo.png" 
-                alt="Sonic Network" 
+                alt="Solana Network" 
                 className="w-8 h-8 object-contain" 
             />
             <div className="font-bold text-xl bg-gradient-to-b from-white to-gray-400 bg-clip-text text-transparent dark:from-white dark:to-gray-400">

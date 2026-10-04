@@ -71,12 +71,12 @@ export function insertSchedule(s: NewSchedule): void {
       `INSERT INTO schedules (id, owner, recipient, amount, token, next_run, interval_secs, remaining, status, enc_key, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
     )
-    .run(s.id, s.owner.toLowerCase(), s.recipient, s.amount, s.token, s.next_run, s.interval_secs, s.remaining, s.enc_key, Date.now())
+    .run(s.id, s.owner, s.recipient, s.amount, s.token, s.next_run, s.interval_secs, s.remaining, s.enc_key, Date.now())
 }
 
 /** Public rows for a user (never includes the encrypted key). */
 export function listSchedulesByOwner(owner: string): ScheduleRow[] {
-  return db().prepare(`SELECT ${PUBLIC_COLS} FROM schedules WHERE owner = ? ORDER BY created_at DESC`).all(owner.toLowerCase()) as any
+  return db().prepare(`SELECT ${PUBLIC_COLS} FROM schedules WHERE owner = ? ORDER BY created_at DESC`).all(owner) as any
 }
 
 /** Due active jobs (includes enc_key — cron use only). */
@@ -104,7 +104,7 @@ export function clearKey(id: string): void {
 export function cancelSchedule(id: string, owner: string): boolean {
   const res = db()
     .prepare(`UPDATE schedules SET status = 'cancelled', enc_key = '' WHERE id = ? AND owner = ? AND status = 'active'`)
-    .run(id, owner.toLowerCase())
+    .run(id, owner)
   return (res.changes ?? 0) > 0
 }
 

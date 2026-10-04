@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Astrax - AI Agent for Sonic",
-  description: "Astrax is an AI agent that turns natural-language chat into on-chain actions on the Sonic Testnet — send tokens, deploy contracts, schedule payments, and more.",
+  title: "Astrax - AI Agent for Solana",
+  description: "Astrax is an AI agent that turns natural-language chat into on-chain actions on Solana — send tokens, create tokens, schedule payments, and more.",
 };
 
 export default function RootLayout({

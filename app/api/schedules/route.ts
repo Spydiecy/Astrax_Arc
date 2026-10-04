@@ -1,14 +1,13 @@
 import { NextResponse } from "next/server"
-import { isAddress } from "viem"
 import { listSchedulesByOwner, cancelSchedule } from "@/lib/db"
-import { NATIVE_SYMBOL } from "@/lib/sonic"
+import { NATIVE_SYMBOL, isValidAddress } from "@/lib/solana"
 
 export const runtime = "nodejs"
 
 // List a user's scheduled payments (never returns the encrypted key).
 export async function GET(req: Request) {
   const owner = new URL(req.url).searchParams.get("owner") || ""
-  if (!isAddress(owner)) return NextResponse.json({ schedules: [] })
+  if (!isValidAddress(owner)) return NextResponse.json({ schedules: [] })
   const rows = listSchedulesByOwner(owner).map((r) => ({
     id: r.id,
     recipient: r.recipient,
@@ -29,6 +28,6 @@ export async function DELETE(req: Request) {
   const url = new URL(req.url)
   const id = url.searchParams.get("id") || ""
   const owner = url.searchParams.get("owner") || ""
-  if (!id || !isAddress(owner)) return NextResponse.json({ ok: false }, { status: 400 })
+  if (!id || !isValidAddress(owner)) return NextResponse.json({ ok: false }, { status: 400 })
   return NextResponse.json({ ok: cancelSchedule(id, owner) })
 }

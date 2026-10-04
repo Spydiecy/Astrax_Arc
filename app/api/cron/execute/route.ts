@@ -14,13 +14,13 @@ const connection = getConnection()
 // so the in-app poller can trigger it locally.
 async function run() {
   const now = Date.now()
-  const due = getDueSchedules(now)
+  const due = await getDueSchedules(now)
   const results: any[] = []
 
   for (const job of due) {
     try {
       if (!job.enc_key) {
-        updateAfterRun(job.id, { status: "failed", note: "missing key" })
+        await updateAfterRun(job.id, { status: "failed", note: "missing key" })
         continue
       }
       const secret = decryptSecret(job.enc_key)
@@ -42,14 +42,14 @@ async function run() {
 
       const remaining = job.remaining - 1
       if (job.interval_secs > 0 && remaining > 0) {
-        updateAfterRun(job.id, { remaining, next_run: now + job.interval_secs * 1000, last_tx: sig })
+        await updateAfterRun(job.id, { remaining, next_run: now + job.interval_secs * 1000, last_tx: sig })
       } else {
-        updateAfterRun(job.id, { remaining: Math.max(0, remaining), status: "done", last_tx: sig })
-        clearKey(job.id) // wipe the stored key once there are no runs left
+        await updateAfterRun(job.id, { remaining: Math.max(0, remaining), status: "done", last_tx: sig })
+        await clearKey(job.id) // wipe the stored key once there are no runs left
       }
       results.push({ id: job.id, hash: sig, remaining })
     } catch (e: any) {
-      updateAfterRun(job.id, { status: "failed", note: (e?.message || "error").slice(0, 160) })
+      await updateAfterRun(job.id, { status: "failed", note: (e?.message || "error").slice(0, 160) })
       results.push({ id: job.id, error: e?.message })
     }
   }

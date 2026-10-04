@@ -1,27 +1,16 @@
 import { NextResponse } from "next/server"
 import { uploadFileToIPFS, isPinataConfigured } from "@/lib/pinata"
+import { rateLimited } from "@/lib/db"
 
 export const runtime = "nodejs"
 
 const MAX_BYTES = 10 * 1024 * 1024 // 10 MB
 const ALLOWED_EXT = /\.(png|jpe?g|gif|webp|svg|pdf|json|txt|doc|docx)$/i
 
-// Basic per-IP rate limit so the endpoint can't be used to drain the Pinata quota.
-// In-memory: resets on restart and isn't shared across serverless instances.
+// Per-IP rate limit so the endpoint can't be used to drain the Pinata quota.
+// Stored in the database, so it holds across server instances.
 const WINDOW_MS = 60_000
 const MAX_PER_WINDOW = 20
-const hits = new Map<string, { count: number; start: number }>()
-
-function rateLimited(ip: string): boolean {
-  const now = Date.now()
-  const h = hits.get(ip)
-  if (!h || now - h.start > WINDOW_MS) {
-    hits.set(ip, { count: 1, start: now })
-    return false
-  }
-  h.count++
-  return h.count > MAX_PER_WINDOW
-}
 
 // Uploads one file to public IPFS via Pinata. The JWT never leaves the server.
 export async function POST(req: Request) {
@@ -29,7 +18,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "IPFS uploads aren't configured on this server." }, { status: 503 })
   }
   const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local"
-  if (rateLimited(ip)) {
+  if (await rateLimited(`upload:${ip}`, WINDOW_MS, MAX_PER_WINDOW)) {
     return NextResponse.json({ error: "Too many uploads. Try again in a minute." }, { status: 429 })
   }
 

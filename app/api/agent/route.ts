@@ -31,8 +31,19 @@ import {
 import { spotPriceUSD, dailyCandles, indicativeCandles } from "@/lib/prices"
 import { uploadJSONToIPFS, isPinataConfigured } from "@/lib/pinata"
 import { explainTarget } from "@/lib/explain"
-import { saveAddress, resolveName, listAddresses, addAsset, listAssets } from "@/lib/store"
-import { insertSchedule, listSchedulesByOwner, cancelSchedule as dbCancelSchedule, listPaymentLinksByOwner } from "@/lib/db"
+import {
+  insertSchedule,
+  listSchedulesByOwner,
+  cancelSchedule as dbCancelSchedule,
+  listPaymentLinksByOwner,
+  getContact,
+  saveContact,
+  listContacts,
+  deleteContact,
+  cleanContactName,
+  addAsset,
+  listAssets,
+} from "@/lib/db"
 import { createPaymentLink as createPaymentLinkRecord, paymentLinkPath, paymentLinkUrl, verifyPaymentLink } from "@/lib/payment-links"
 import { requestOrigin } from "@/lib/origin"
 import { isOwner, NOT_OWNER } from "@/lib/auth"
@@ -162,7 +173,8 @@ Guidance:
 - "pay alice 500 ${NATIVE_SYMBOL} every month for a year / salary" → scheduleTransfer with every:"monthly", occurrences:12
 - "show my scheduled payments" → listSchedules ; "cancel schedule <id>" → cancelSchedule
 - "payment link for 0.5 ${NATIVE_SYMBOL}" → createPaymentLink ; "my payment links / has my link been paid" → listPaymentLinks
-- "save alice as <address>" → saveContact ; "who is alice" → resolveContact
+- "save alice as <address>" → saveContact ; "who is alice" → resolveContact ; "my contacts" → listContacts ; "remove alice" → deleteContact
+- Recipients can be a contact name ("send 1 SOL to alice") — pass the name itself as the recipient.
 - "store asset <link>" → storeAsset ; "my assets" → listAssets
 
 ## Formatting
@@ -245,12 +257,14 @@ export async function POST(req: Request) {
       ? { error: "No secret key configured. Open the sidebar **Signing** panel, switch to **Autonomous**, and paste your secret key." }
       : { error: "No wallet connected. Connect your wallet in the top bar (wallet signing mode) and try again." }
 
-  // Resolve a recipient string (address or saved contact name) to a base58 address.
-  const resolveRecipient = async (to: string): Promise<string | null> => {
-    if (isValidAddress(to)) return to
-    const name = to.startsWith("@") ? to.slice(1) : to
-    const addr = await resolveName(name)
-    return addr && isValidAddress(addr) ? addr : null
+  // Resolve a recipient (address, or a name from THIS user's contacts) to an address.
+  // Contact lookup needs a verified owner, so nobody can read someone else's contacts.
+  const resolveRecipient = async (to: string): Promise<{ address: string } | { error: string; needsAuth?: boolean }> => {
+    if (isValidAddress(to)) return { address: to }
+    if (!verifiedOwner) return ownerAddress ? NOT_OWNER : { error: `"${to}" isn't an address. Connect a wallet to use saved contacts.` }
+    const c = await getContact(verifiedOwner, to)
+    if (c && isValidAddress(c.address)) return { address: c.address }
+    return { error: `No contact named "${cleanContactName(to)}". Give an address or save them as a contact first.` }
   }
 
   // Resolve a token argument (symbol or mint address) to its mint, program and decimals.
@@ -477,28 +491,44 @@ export async function POST(req: Request) {
       }),
 
       resolveContact: tool({
-        description: "Resolve a saved contact name to its address (address book).",
+        description: "Look up one of the user's saved contacts by name.",
         parameters: z.object({ name: z.string() }),
         execute: async ({ name }) => {
-          const addr = await resolveName(name.startsWith("@") ? name.slice(1) : name)
-          return addr ? { kind: "contact", name, address: addr } : { error: `No contact named "${name}".` }
+          if (!verifiedOwner) return needOwner()
+          const c = await getContact(verifiedOwner, name)
+          return c ? { kind: "contact", name: c.name, address: c.address } : { error: `No contact named "${cleanContactName(name)}".` }
         },
       }),
 
       saveContact: tool({
-        description: "Save a contact (name -> address) to the address book.",
+        description: "Save (or update) a contact name → address in the user's own address book.",
         parameters: z.object({ name: z.string(), address: z.string() }),
         execute: async ({ name, address }) => {
+          if (!verifiedOwner) return needOwner()
           if (!isValidAddress(address)) return { error: "That is not a valid Solana address." }
-          await saveAddress(name.startsWith("@") ? name.slice(1) : name, address)
-          return { kind: "contact", name, address, saved: true }
+          if (!cleanContactName(name)) return { error: "Give the contact a name." }
+          const c = await saveContact(verifiedOwner, name, address)
+          return { kind: "contact", name: c.name, address: c.address, saved: true }
         },
       }),
 
       listContacts: tool({
-        description: "List all saved contacts in the address book.",
+        description: "List the user's saved contacts.",
         parameters: z.object({}),
-        execute: async () => ({ kind: "contactList", contacts: await listAddresses() }),
+        execute: async () => {
+          if (!verifiedOwner) return needOwner()
+          return { kind: "contactList", contacts: await listContacts(verifiedOwner) }
+        },
+      }),
+
+      deleteContact: tool({
+        description: "Remove a contact from the user's address book by name.",
+        parameters: z.object({ name: z.string() }),
+        execute: async ({ name }) => {
+          if (!verifiedOwner) return needOwner()
+          const ok = await deleteContact(verifiedOwner, name)
+          return ok ? { kind: "contactDeleted", name: cleanContactName(name) } : { error: `No contact named "${cleanContactName(name)}".` }
+        },
       }),
 
       // ── WRITE (auto = sign now; wallet = return a prepared transaction) ───────
@@ -510,8 +540,9 @@ export async function POST(req: Request) {
           token: z.string().optional(),
         }),
         execute: async ({ to, amount, token }) => {
-          const recipient = await resolveRecipient(to)
-          if (!recipient) return { error: `Could not resolve recipient "${to}". Give an address or save them as a contact first.` }
+          const resolved = await resolveRecipient(to)
+          if ("error" in resolved) return resolved
+          const recipient = resolved.address
           const native = isNativeToken(token)
           let spl: ResolvedToken | undefined
           if (!native) {
@@ -676,8 +707,9 @@ export async function POST(req: Request) {
           }
           const runAt = parseWhen(when)
           if (!runAt) return { error: `Could not understand the time "${when}". Try "in 10 minutes" or "2026-01-01 17:00".` }
-          const recipient = await resolveRecipient(to)
-          if (!recipient) return { error: `Could not resolve recipient "${to}".` }
+          const resolved = await resolveRecipient(to)
+          if ("error" in resolved) return resolved
+          const recipient = resolved.address
           if (!/^\d+(\.\d+)?$/.test(amount) || Number(amount) <= 0) return { error: `Invalid amount "${amount}".` }
           if (!isNativeToken(token)) {
             const resolved = await resolveToken(token!)
@@ -686,7 +718,7 @@ export async function POST(req: Request) {
           const intervalSecs = parseEvery(every)
           const remaining = occurrences ?? 1
           const id = `sch_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
-          insertSchedule({
+          await insertSchedule({
             id,
             owner: wallet.publicKey,
             recipient,
@@ -716,7 +748,7 @@ export async function POST(req: Request) {
         execute: async () => {
           const owner = verifiedOwner
           if (!owner) return needOwner()
-          const rows = listSchedulesByOwner(owner).map((r) => ({
+          const rows = (await listSchedulesByOwner(owner)).map((r) => ({
             id: r.id,
             to: r.recipient,
             amount: `${r.amount} ${r.token || NATIVE_SYMBOL}`,
@@ -735,7 +767,7 @@ export async function POST(req: Request) {
         execute: async ({ id }) => {
           const owner = verifiedOwner
           if (!owner) return needOwner()
-          const ok = dbCancelSchedule(id, owner)
+          const ok = await dbCancelSchedule(id, owner)
           return ok ? { kind: "scheduleCancelled", id } : { error: `No active schedule ${id} found for you.` }
         },
       }),
@@ -747,7 +779,7 @@ export async function POST(req: Request) {
           if (!ownerAddress || !isValidAddress(ownerAddress)) return { error: "No receiving address available. Connect a wallet or add a secret key." }
           if (!verifiedOwner) return NOT_OWNER
           if (!/^\d+(\.\d+)?$/.test(amount) || Number(amount) <= 0) return { error: `Invalid amount "${amount}".` }
-          const link = createPaymentLinkRecord({ owner: verifiedOwner, amount, description })
+          const link = await createPaymentLinkRecord({ owner: verifiedOwner, amount, description })
           return { kind: "paymentLink", id: link.id, path: paymentLinkPath(link.id), url: paymentLinkUrl(link.id, origin), address: verifiedOwner, amount: `${amount} ${NATIVE_SYMBOL}`, description: link.description || undefined, status: link.status }
         },
       }),
@@ -758,7 +790,7 @@ export async function POST(req: Request) {
         execute: async () => {
           if (!verifiedOwner) return needOwner()
           const rows = await Promise.all(
-            listPaymentLinksByOwner(verifiedOwner, 20).map((r) => (r.status === "open" ? verifyPaymentLink(r) : r)),
+            (await listPaymentLinksByOwner(verifiedOwner, 20)).map((r) => (r.status === "open" ? verifyPaymentLink(r) : r)),
           )
           return {
             kind: "paymentLinkList",
@@ -780,7 +812,7 @@ export async function POST(req: Request) {
         parameters: z.object({ link: z.string(), description: z.string() }),
         execute: async ({ link, description }) => {
           if (!verifiedOwner) return needOwner()
-          await addAsset({ link, description, owner: verifiedOwner, createdAt: new Date().toISOString() })
+          await addAsset(verifiedOwner, link, description)
           return { kind: "asset", link, description, owner: verifiedOwner, saved: true }
         },
       }),

@@ -9,7 +9,7 @@ export async function POST(req: Request) {
   const origin = requestOrigin(req)
   let result
   try {
-    result = verifyChallenge(body, origin)
+    result = await verifyChallenge(body, origin)
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "Sign-in unavailable." }, { status: 500 })
   }

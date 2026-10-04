@@ -45,7 +45,7 @@ export function publicLink(l: PaymentLinkRow, origin: string) {
 }
 export type PublicPaymentLink = ReturnType<typeof publicLink>
 
-export function createPaymentLink(input: { owner: string; amount: string; description?: string }): PaymentLinkRow {
+export async function createPaymentLink(input: { owner: string; amount: string; description?: string }): Promise<PaymentLinkRow> {
   const id = `pl_${randomBytes(6).toString("hex")}`
   const row = {
     id,
@@ -56,8 +56,10 @@ export function createPaymentLink(input: { owner: string; amount: string; descri
     description: (input.description || "").trim().slice(0, MAX_DESCRIPTION),
     reference: Keypair.generate().publicKey.toBase58(),
   }
-  insertPaymentLink(row)
-  return getPaymentLink(id)!
+  await insertPaymentLink(row)
+  const saved = await getPaymentLink(id)
+  if (!saved) throw new Error("Payment link wasn't saved.")
+  return saved
 }
 
 // Don't hit the RPC for the same link more than once every few seconds
@@ -98,8 +100,8 @@ export async function verifyPaymentLink(link: PaymentLinkRow): Promise<PaymentLi
       const received = BigInt(tx.meta.postBalances[i]) - BigInt(tx.meta.preBalances[i])
       if (received < expected) continue
       const paidAt = (s.blockTime ?? Math.floor(now / 1000)) * 1000
-      markPaymentLinkPaid(link.id, s.signature, keys[0], paidAt)
-      return getPaymentLink(link.id) ?? link
+      await markPaymentLinkPaid(link.id, s.signature, keys[0], paidAt)
+      return (await getPaymentLink(link.id)) ?? link
     } catch {
       /* skip unreadable tx */
     }

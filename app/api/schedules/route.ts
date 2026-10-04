@@ -11,7 +11,7 @@ export async function GET(req: Request) {
   const owner = new URL(req.url).searchParams.get("owner") || ""
   if (!isValidAddress(owner)) return NextResponse.json({ schedules: [] })
   if (!isOwner(req, owner)) return NextResponse.json(NOT_OWNER, { status: 401 })
-  const rows = listSchedulesByOwner(owner).map((r) => ({
+  const rows = (await listSchedulesByOwner(owner)).map((r) => ({
     id: r.id,
     recipient: r.recipient,
     amount: r.amount,
@@ -33,5 +33,5 @@ export async function DELETE(req: Request) {
   const owner = url.searchParams.get("owner") || ""
   if (!id || !isValidAddress(owner)) return NextResponse.json({ ok: false }, { status: 400 })
   if (!isOwner(req, owner)) return NextResponse.json({ ok: false, ...NOT_OWNER }, { status: 401 })
-  return NextResponse.json({ ok: cancelSchedule(id, owner) })
+  return NextResponse.json({ ok: await cancelSchedule(id, owner) })
 }

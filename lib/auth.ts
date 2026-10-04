@@ -12,6 +12,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "crypto"
 import { ed25519 } from "@noble/curves/ed25519.js"
 import bs58 from "bs58"
 import { isValidAddress } from "./solana"
+import { consumeNonce } from "./db"
 
 export const SESSION_COOKIE = "astrax_session"
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000
@@ -57,20 +58,13 @@ export function createChallenge(address: string, origin: string): { message: str
   return { message, token: mac(`challenge:${message}`) }
 }
 
-// Signed challenges are single-use (per server instance).
-const usedNonces = new Map<string, number>()
-function consumeNonce(nonce: string, expiresAt: number): boolean {
-  const now = Date.now()
-  for (const [n, exp] of usedNonces) if (exp < now) usedNonces.delete(n)
-  if (usedNonces.has(nonce)) return false
-  usedNonces.set(nonce, expiresAt)
-  return true
-}
+// Signed challenges are single-use; the used-nonce list lives in the database so
+// it holds across all server instances (lib/db.ts consumeNonce).
 
-export function verifyChallenge(
+export async function verifyChallenge(
   input: { address?: string; message?: string; token?: string; signature?: string },
   origin: string,
-): { ok: true; address: string } | { ok: false; error: string } {
+): Promise<{ ok: true; address: string } | { ok: false; error: string }> {
   const { address, message, token, signature } = input
   if (!address || !isValidAddress(address) || !message || !token || !signature) return { ok: false, error: "Missing fields." }
   if (!safeEqual(mac(`challenge:${message}`), token)) return { ok: false, error: "Unknown or tampered challenge." }
@@ -95,7 +89,7 @@ export function verifyChallenge(
     valid = false
   }
   if (!valid) return { ok: false, error: "Signature doesn't match this wallet." }
-  if (!consumeNonce(field("Nonce") || "", exp)) return { ok: false, error: "This sign-in was already used." }
+  if (!(await consumeNonce(field("Nonce") || "", exp))) return { ok: false, error: "This sign-in was already used." }
   return { ok: true, address }
 }
 

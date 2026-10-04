@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 import { Coins, Copy, ExternalLink, Check } from 'lucide-react'
 import { useState } from 'react'
+import { CLUSTER_LABEL, NATIVE_SENTINEL, explorerAddress, explorerPath } from '@/lib/solana'
 
 interface Token {
   symbol: string
@@ -35,8 +36,7 @@ const TokenListCard: React.FC<TokenListCardProps> = ({ tokens, className }) => {
     const tokenIcons: Record<string, string> = {
       'USDT': '/usdt.png',
       'USDC': '/usdc.png',
-      'SOL': '/s.svg',
-      'S': '/s.svg',
+      'SOL': '/sol.svg',
       'crvUSD': '/crv.png',
       'DAI': '/dai.png',
       'DMCX': '/dmcx.png',
@@ -52,7 +52,7 @@ const TokenListCard: React.FC<TokenListCardProps> = ({ tokens, className }) => {
   }
 
   const formatAddress = (address: string): string => {
-    if (address === 'native') {
+    if (address === NATIVE_SENTINEL) {
       return 'Native Token'
     }
     return `${address.slice(0, 4)}...${address.slice(-4)}`
@@ -129,7 +129,7 @@ const TokenListCard: React.FC<TokenListCardProps> = ({ tokens, className }) => {
 
                 {/* Explorer Link */}
                 <a
-                  href={`https://explorer.solana.com/address/${token.address}?cluster=devnet`}
+                  href={token.address === NATIVE_SENTINEL ? explorerPath("/supply") : explorerAddress(token.address)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="p-2 rounded-lg hover:bg-muted transition-colors"
@@ -146,7 +146,7 @@ const TokenListCard: React.FC<TokenListCardProps> = ({ tokens, className }) => {
         <div className="mt-6 pt-4 border-t">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>Network: Solana</span>
-            <span>Cluster: Devnet</span>
+            <span>Cluster: {CLUSTER_LABEL}</span>
           </div>
         </div>
       </CardContent>

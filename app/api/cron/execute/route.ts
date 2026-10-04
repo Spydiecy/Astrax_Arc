@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server"
 import { PublicKey, sendAndConfirmTransaction } from "@solana/web3.js"
-import { getMint } from "@solana/spl-token"
-import { getConnection, NATIVE_SYMBOL, NATIVE_DECIMALS, findToken, NATIVE_SENTINEL, isNativeToken } from "@/lib/solana"
-import { keypairFromSecret, buildSolTransfer, buildTokenTransfer } from "@/lib/spl"
+import { getConnection, findToken, NATIVE_SENTINEL, isNativeToken } from "@/lib/solana"
+import { keypairFromSecret, getMintInfo, buildSolTransfer, buildTokenTransfer } from "@/lib/spl"
 import { getDueSchedules, updateAfterRun, clearKey } from "@/lib/db"
 import { decryptSecret } from "@/lib/crypto"
 
@@ -36,8 +35,8 @@ async function run() {
         const info = findToken(job.token)
         const mintStr = info?.address && info.address !== NATIVE_SENTINEL ? info.address : job.token
         const mint = new PublicKey(mintStr)
-        const decimals = info?.decimals ?? (await getMint(connection, mint)).decimals
-        const tx = await buildTokenTransfer(connection, keypair.publicKey, recipient, mint, job.amount, decimals)
+        const { programId, decimals } = await getMintInfo(connection, mint)
+        const tx = await buildTokenTransfer(connection, keypair.publicKey, recipient, mint, job.amount, decimals, programId)
         sig = await sendAndConfirmTransaction(connection, tx, [keypair])
       }
 
@@ -55,7 +54,7 @@ async function run() {
     }
   }
 
-  return { ran: results.length, results, at: new Date(now).toISOString(), symbol: NATIVE_SYMBOL, decimals: NATIVE_DECIMALS }
+  return { ran: results.length, results, at: new Date(now).toISOString() }
 }
 
 function authorized(req: Request): boolean {

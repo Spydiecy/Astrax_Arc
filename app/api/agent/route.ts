@@ -3,13 +3,13 @@ import { createMistral } from "@ai-sdk/mistral"
 import { createGoogleGenerativeAI } from "@ai-sdk/google"
 import { z } from "zod"
 import { PublicKey, sendAndConfirmTransaction, LAMPORTS_PER_SOL } from "@solana/web3.js"
-import { getMint, getAssociatedTokenAddressSync, getAccount } from "@solana/spl-token"
+import { getAssociatedTokenAddressSync, getAccount } from "@solana/spl-token"
 import {
   getConnection,
-  RPC_URL,
+  getBlockSummary,
   NATIVE_SYMBOL,
-  NATIVE_DECIMALS,
   EXPLORER_URL,
+  CLUSTER,
   explorerTx,
   explorerAddress,
   SOLANA_TOKENS,
@@ -20,6 +20,7 @@ import {
 } from "@/lib/solana"
 import {
   keypairFromSecret,
+  getMintInfo,
   buildSolTransfer,
   buildTokenTransfer,
   buildCreateToken,
@@ -130,7 +131,7 @@ async function nativeUsdPrice(): Promise<number | null> {
   }
 }
 
-const SYSTEM_PROMPT = `You are **Astrax**, the AI agent built into the Astrax dApp — a natural-language command center for **Solana** (cluster: devnet, native token **${NATIVE_SYMBOL}**, explorer ${EXPLORER_URL}).
+const SYSTEM_PROMPT = `You are **Astrax**, the AI agent built into the Astrax dApp — a natural-language command center for **Solana** (cluster: ${CLUSTER}, native token **${NATIVE_SYMBOL}**, explorer ${EXPLORER_URL}).
 
 ## Personality
 You talk only about Astrax, the Solana blockchain, and crypto operations. If asked about something unrelated, give a short warm redirect back to what Astrax can do.
@@ -148,9 +149,10 @@ Guidance:
 - "diagram / workflow / flowchart / visualize this" → generateDiagram (YOU write the Mermaid code)
 - "generate an image of … / draw …" → generateImage
 - When the user attaches a file you'll see its IPFS URL in the message. If they're creating an NFT, pass that URL as the deployNFT "image" argument; otherwise save it with storeAsset. NFT images are optional.
-- "create token MoonCoin MOON supply 1000000" → deployToken (creates an SPL mint)
-- "create an NFT / launch an NFT" → deployNFT (SPL mint, supply 1)
-- "mint more of <mint>" → mintNFT
+- "create token MoonCoin MOON supply 1000000" → deployToken (creates an SPL token with on-chain name/symbol)
+- "create an NFT / mint an NFT" → deployNFT (a 1-of-1 SPL token with fixed supply)
+- "mint 500 more <mint>" → mintTokens (only works if the user is the mint authority)
+- Arbitrary smart-contract / program deployment is NOT supported from chat — say so briefly and offer token/NFT creation instead.
 - "schedule 2 ${NATIVE_SYMBOL} to alice tomorrow at 5pm" → scheduleTransfer (one-time)
 - "pay alice 500 ${NATIVE_SYMBOL} every month for a year / salary" → scheduleTransfer with every:"monthly", occurrences:12
 - "show my scheduled payments" → listSchedules ; "cancel schedule <id>" → cancelSchedule
@@ -198,21 +200,19 @@ export async function POST(req: Request) {
     return addr && isValidAddress(addr) ? addr : null
   }
 
-  // Resolve a token argument to { mint, decimals, symbol }.
-  const resolveToken = async (token: string): Promise<{ mint: PublicKey; decimals: number; symbol: string } | { error: string }> => {
+  // Resolve a token argument (symbol or mint address) to its mint, program and decimals.
+  type ResolvedToken = { mint: PublicKey; programId: PublicKey; decimals: number; symbol: string }
+  const resolveToken = async (token: string): Promise<ResolvedToken | { error: string }> => {
     const info = findToken(token)
     const mintStr = info?.address && info.address !== NATIVE_SENTINEL ? info.address : token
     if (!isValidAddress(mintStr)) return { error: `Unknown token: ${token}` }
     const mint = new PublicKey(mintStr)
-    let decimals = info?.decimals
-    if (decimals == null) {
-      try {
-        decimals = (await getMint(connection, mint)).decimals
-      } catch {
-        return { error: `Could not read mint ${token}.` }
-      }
+    try {
+      const { programId, decimals } = await getMintInfo(connection, mint)
+      return { mint, programId, decimals, symbol: info?.symbol ?? (mintStr === token ? `${token.slice(0, 4)}…` : token) }
+    } catch (e: any) {
+      return { error: `Could not read mint ${token}: ${e?.message || "not found"}.` }
     }
-    return { mint, decimals, symbol: info?.symbol ?? token }
   }
 
   const result = await streamText({
@@ -254,9 +254,9 @@ export async function POST(req: Request) {
             if (!target || !isValidAddress(target)) return { error: "No valid address available." }
             const resolved = await resolveToken(token)
             if ("error" in resolved) return resolved
-            const ata = getAssociatedTokenAddressSync(resolved.mint, new PublicKey(target))
+            const ata = getAssociatedTokenAddressSync(resolved.mint, new PublicKey(target), true, resolved.programId)
             try {
-              const acc = await getAccount(connection, ata)
+              const acc = await getAccount(connection, ata, "confirmed", resolved.programId)
               const balance = Number(acc.amount) / 10 ** resolved.decimals
               return { kind: "balance", address: target, balance: balance.toFixed(4), symbol: resolved.symbol }
             } catch {
@@ -280,7 +280,9 @@ export async function POST(req: Request) {
             const to = keys[1]?.pubkey.toBase58()
             const pre = tx.meta?.preBalances?.[0] ?? 0
             const post = tx.meta?.postBalances?.[0] ?? 0
-            const moved = Math.abs(pre - post) / LAMPORTS_PER_SOL
+            const feeLamports = tx.meta?.fee ?? 0
+            // SOL the fee payer spent beyond the network fee (transfers, rent, …).
+            const moved = Math.max(0, pre - post - feeLamports) / LAMPORTS_PER_SOL
             return {
               kind: "transaction",
               hash,
@@ -289,7 +291,7 @@ export async function POST(req: Request) {
               value: `${moved.toFixed(6)} ${NATIVE_SYMBOL}`,
               blockNumber: tx.slot?.toString() ?? "pending",
               status: tx.meta?.err ? "Failed" : "Success",
-              gasUsed: tx.meta?.fee != null ? `${(tx.meta.fee / LAMPORTS_PER_SOL).toFixed(6)} ${NATIVE_SYMBOL}` : undefined,
+              fee: `${(feeLamports / LAMPORTS_PER_SOL).toFixed(6)} ${NATIVE_SYMBOL}`,
               explorerUrl: explorerTx(hash),
             }
           } catch {
@@ -304,29 +306,21 @@ export async function POST(req: Request) {
         execute: async ({ count }) => {
           try {
             const n = count ?? 3
-            const slot = await connection.getSlot()
+            // Use the confirmed tip; the processed tip often isn't queryable yet.
+            const slot = await connection.getSlot("confirmed")
             const blocks: any[] = []
-            let s = slot
-            while (blocks.length < n && s > slot - 20 && s >= 0) {
-              try {
-                const b = await connection.getBlock(s, {
-                  maxSupportedTransactionVersion: 0,
-                  transactionDetails: "signatures",
-                  rewards: false,
+            for (let s = slot; blocks.length < n && s > slot - 20 && s >= 0; s--) {
+              const b = await getBlockSummary(s).catch(() => null) // null = skipped slot
+              if (b) {
+                blocks.push({
+                  blockNumber: s.toString(),
+                  hash: b.blockhash,
+                  timestamp: b.blockTime ? new Date(b.blockTime * 1000).toLocaleString() : "",
+                  transactionCount: b.transactionCount,
                 })
-                if (b) {
-                  blocks.push({
-                    blockNumber: s.toString(),
-                    hash: b.blockhash,
-                    timestamp: b.blockTime ? new Date(b.blockTime * 1000).toLocaleString() : "",
-                    transactionCount: (b as any).signatures?.length ?? 0,
-                  })
-                }
-              } catch {
-                /* skipped slot — ignore */
               }
-              s--
             }
+            if (blocks.length === 0) return { error: "Could not read recent blocks from the RPC." }
             return { kind: "blocks", blocks }
           } catch {
             return { error: "Failed to fetch blocks." }
@@ -341,19 +335,15 @@ export async function POST(req: Request) {
           try {
             const slot = parseInt(block, 10)
             if (isNaN(slot)) return { error: "Give a numeric slot." }
-            const b = await connection.getBlock(slot, {
-              maxSupportedTransactionVersion: 0,
-              transactionDetails: "signatures",
-              rewards: false,
-            })
-            if (!b) return { error: "Block not found." }
+            const b = await getBlockSummary(slot)
+            if (!b) return { error: `No block at slot ${slot} (it may have been skipped or pruned).` }
             return {
               kind: "block",
               blockNumber: slot.toString(),
               hash: b.blockhash,
               timestamp: b.blockTime ? new Date(b.blockTime * 1000).toLocaleString() : "",
-              transactionCount: (b as any).signatures?.length ?? 0,
-              gasUsed: b.parentSlot?.toString() ?? "",
+              transactionCount: b.transactionCount,
+              parentSlot: b.parentSlot.toString(),
             }
           } catch {
             return { error: "Block not found." }
@@ -470,31 +460,33 @@ export async function POST(req: Request) {
           const recipient = await resolveRecipient(to)
           if (!recipient) return { error: `Could not resolve recipient "${to}". Give an address or save them as a contact first.` }
           const native = isNativeToken(token)
-          let mint: PublicKey | undefined
-          let decimals = NATIVE_DECIMALS
-          let symbol = NATIVE_SYMBOL
+          let spl: ResolvedToken | undefined
           if (!native) {
             const resolved = await resolveToken(token!)
             if ("error" in resolved) return resolved
-            mint = resolved.mint
-            decimals = resolved.decimals
-            symbol = resolved.symbol
+            spl = resolved
           }
+          const symbol = spl?.symbol ?? NATIVE_SYMBOL
+          const build = (owner: PublicKey) =>
+            spl
+              ? buildTokenTransfer(connection, owner, new PublicKey(recipient), spl.mint, amount, spl.decimals, spl.programId)
+              : buildSolTransfer(connection, owner, new PublicKey(recipient), amount)
 
           if (signingMode === "wallet") {
             if (!ownerAddress) return noSigner()
-            const owner = new PublicKey(ownerAddress)
-            const tx = native
-              ? await buildSolTransfer(connection, owner, new PublicKey(recipient), amount)
-              : await buildTokenTransfer(connection, owner, new PublicKey(recipient), mint!, amount, decimals)
-            return {
-              kind: "action",
-              action: native ? "sendNative" : "sendToken",
-              to: recipient,
-              amount,
-              symbol,
-              txBase64: serializeTx(tx),
-              label: `Send ${amount} ${symbol}`,
+            try {
+              const tx = await build(new PublicKey(ownerAddress))
+              return {
+                kind: "action",
+                action: native ? "sendNative" : "sendToken",
+                to: recipient,
+                amount,
+                symbol,
+                txBase64: serializeTx(tx),
+                label: `Send ${amount} ${symbol}`,
+              }
+            } catch (e: any) {
+              return { error: `Could not prepare transfer: ${(e?.message || "unknown error").slice(0, 160)}` }
             }
           }
 
@@ -502,9 +494,7 @@ export async function POST(req: Request) {
           if (!wallet) return noSigner()
           try {
             const owner = wallet.keypair.publicKey
-            const tx = native
-              ? await buildSolTransfer(connection, owner, new PublicKey(recipient), amount)
-              : await buildTokenTransfer(connection, owner, new PublicKey(recipient), mint!, amount, decimals)
+            const tx = await build(owner)
             const sig = await sendAndConfirmTransaction(connection, tx, [wallet.keypair])
             return { kind: "transaction", status: "Submitted", action: "send", hash: sig, from: owner.toBase58(), to: recipient, value: `${amount} ${symbol}`, explorerUrl: explorerTx(sig) }
           } catch (e: any) {
@@ -514,20 +504,24 @@ export async function POST(req: Request) {
       }),
 
       deployToken: tool({
-        description: "Create a new SPL token on Solana. Mints the full supply to the creator.",
-        parameters: z.object({ name: z.string(), symbol: z.string(), supply: z.string() }),
-        execute: async ({ name, symbol, supply }) => {
-          const decimals = 9
+        description: "Create a new SPL token on Solana with on-chain name/symbol metadata. Mints the full supply to the creator.",
+        parameters: z.object({
+          name: z.string(),
+          symbol: z.string(),
+          supply: z.string().describe("Whole-token supply, e.g. 1000000"),
+          decimals: z.number().int().min(0).max(9).optional().describe("Defaults to 9"),
+        }),
+        execute: async ({ name, symbol, supply, decimals }) => {
+          const params = { name, symbol, decimals: decimals ?? 9, supply, uri: "" }
+          if (!/^\d+(\.\d+)?$/.test(supply)) return { error: `Invalid supply "${supply}".` }
           if (signingMode === "wallet") {
             if (!ownerAddress) return noSigner()
-            const owner = new PublicKey(ownerAddress)
-            const { tx, mint } = await buildCreateToken(connection, owner, decimals, supply)
-            tx.partialSign(mint)
-            return { kind: "action", action: "deployToken", name, symbol, supply, mint: mint.publicKey.toBase58(), txBase64: serializeTx(tx), label: `Create token ${name} (${symbol})` }
+            // The mint keypair is generated in the browser so it can co-sign.
+            return { kind: "action", action: "deployToken", ...params, label: `Create token ${name} (${symbol})` }
           }
           if (!wallet) return noSigner()
           try {
-            const { tx, mint } = await buildCreateToken(connection, wallet.keypair.publicKey, decimals, supply)
+            const { tx, mint } = await buildCreateToken(connection, wallet.keypair.publicKey, params)
             const sig = await sendAndConfirmTransaction(connection, tx, [wallet.keypair, mint])
             return { kind: "deploy", what: "token", name, symbol, supply, contractAddress: mint.publicKey.toBase58(), hash: sig, explorerUrl: explorerTx(sig) }
           } catch (e: any) {
@@ -538,7 +532,7 @@ export async function POST(req: Request) {
 
       deployNFT: tool({
         description:
-          "Create a new NFT on Solana (an SPL mint with supply 1). The image is OPTIONAL — if the user attached an image (you'll see an IPFS URL in the message), pass it as `image`. Use for 'create an NFT' / 'mint an NFT'.",
+          "Create a 1-of-1 NFT on Solana (SPL token, 0 decimals, supply 1, mint authority revoked) with on-chain name/symbol/uri metadata. The image is OPTIONAL — if the user attached an image (you'll see an IPFS URL in the message), pass it as `image`. Use for 'create an NFT' / 'mint an NFT'.",
         parameters: z.object({
           name: z.string(),
           symbol: z.string(),
@@ -562,16 +556,14 @@ export async function POST(req: Request) {
             }
           }
 
+          const params = { name, symbol, decimals: 0, supply: "1", uri: metadataUri || "", fixedSupply: true }
           if (signingMode === "wallet") {
             if (!ownerAddress) return noSigner()
-            const owner = new PublicKey(ownerAddress)
-            const { tx, mint } = await buildCreateToken(connection, owner, 0, "1")
-            tx.partialSign(mint)
-            return { kind: "action", action: "deployNFT", name, symbol, image: imageUsed, metadataUri, mint: mint.publicKey.toBase58(), txBase64: serializeTx(tx), label: `Create NFT ${name} (${symbol})` }
+            return { kind: "action", action: "deployNFT", ...params, image: imageUsed, metadataUri, label: `Create NFT ${name} (${symbol})` }
           }
           if (!wallet) return noSigner()
           try {
-            const { tx, mint } = await buildCreateToken(connection, wallet.keypair.publicKey, 0, "1")
+            const { tx, mint } = await buildCreateToken(connection, wallet.keypair.publicKey, params)
             const sig = await sendAndConfirmTransaction(connection, tx, [wallet.keypair, mint])
             return { kind: "deploy", what: "nft", name, symbol, image: imageUsed, metadataUri, contractAddress: mint.publicKey.toBase58(), hash: sig, explorerUrl: explorerTx(sig) }
           } catch (e: any) {
@@ -580,30 +572,33 @@ export async function POST(req: Request) {
         },
       }),
 
-      mintNFT: tool({
-        description: "Mint additional units of an existing SPL mint to a recipient. Give the mint address; mints to the user unless another address is specified. The user must be the mint authority.",
-        parameters: z.object({ contract: z.string().describe("Mint address"), to: z.string().optional(), amount: z.string().optional() }),
-        execute: async ({ contract, to, amount }) => {
-          if (!isValidAddress(contract)) return { error: "That is not a valid mint address." }
+      mintTokens: tool({
+        description: "Mint additional units of an existing SPL token mint to a recipient. Give the mint address; mints to the user unless another address is specified. The user must be the mint authority (NFTs created by Astrax have a fixed supply and cannot be minted further).",
+        parameters: z.object({ mint: z.string().describe("Mint address"), to: z.string().optional(), amount: z.string().optional() }),
+        execute: async ({ mint: mintArg, to, amount }) => {
+          if (!isValidAddress(mintArg)) return { error: "That is not a valid mint address." }
           const recipient = to && isValidAddress(to) ? to : ownerAddress
           if (!recipient || !isValidAddress(recipient)) return { error: "No recipient address available." }
-          const mint = new PublicKey(contract)
-          let decimals = 0
+          const mint = new PublicKey(mintArg)
+          let info: { programId: PublicKey; decimals: number }
           try {
-            decimals = (await getMint(connection, mint)).decimals
-          } catch {
-            return { error: "Could not read that mint." }
+            info = await getMintInfo(connection, mint)
+          } catch (e: any) {
+            return { error: `Could not read that mint: ${e?.message || "not found"}.` }
           }
           const amt = amount || "1"
           if (signingMode === "wallet") {
             if (!ownerAddress) return noSigner()
-            const owner = new PublicKey(ownerAddress)
-            const tx = await buildMintTo(connection, owner, mint, new PublicKey(recipient), amt, decimals)
-            return { kind: "action", action: "mintNFT", contract, to: recipient, amount: amt, txBase64: serializeTx(tx), label: `Mint → ${recipient.slice(0, 4)}…${recipient.slice(-4)}` }
+            try {
+              const tx = await buildMintTo(connection, new PublicKey(ownerAddress), mint, new PublicKey(recipient), amt, info.decimals, info.programId)
+              return { kind: "action", action: "mintTokens", mint: mintArg, to: recipient, amount: amt, txBase64: serializeTx(tx), label: `Mint ${amt} → ${recipient.slice(0, 4)}…${recipient.slice(-4)}` }
+            } catch (e: any) {
+              return { error: `Could not prepare mint: ${(e?.message || "unknown error").slice(0, 160)}` }
+            }
           }
           if (!wallet) return noSigner()
           try {
-            const tx = await buildMintTo(connection, wallet.keypair.publicKey, mint, new PublicKey(recipient), amt, decimals)
+            const tx = await buildMintTo(connection, wallet.keypair.publicKey, mint, new PublicKey(recipient), amt, info.decimals, info.programId)
             const sig = await sendAndConfirmTransaction(connection, tx, [wallet.keypair])
             return { kind: "transaction", status: "Submitted", action: "mint", hash: sig, to: recipient, value: `${amt} token(s)`, explorerUrl: explorerTx(sig) }
           } catch (e: any) {
@@ -630,6 +625,11 @@ export async function POST(req: Request) {
           if (!runAt) return { error: `Could not understand the time "${when}". Try "in 10 minutes" or "2026-01-01 17:00".` }
           const recipient = await resolveRecipient(to)
           if (!recipient) return { error: `Could not resolve recipient "${to}".` }
+          if (!/^\d+(\.\d+)?$/.test(amount) || Number(amount) <= 0) return { error: `Invalid amount "${amount}".` }
+          if (!isNativeToken(token)) {
+            const resolved = await resolveToken(token!)
+            if ("error" in resolved) return resolved
+          }
           const intervalSecs = parseEvery(every)
           const remaining = occurrences ?? 1
           const id = `sch_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
@@ -652,7 +652,7 @@ export async function POST(req: Request) {
             amount: `${amount} ${token || NATIVE_SYMBOL}`,
             runAt: runAt.toLocaleString(),
             recurrence: recurrenceLabel,
-            note: "Astrax stores your key encrypted so it can send this on time, even if you close the app (devnet).",
+            note: `Astrax stores your key encrypted so it can send this on time, even if you close the app (${CLUSTER}).`,
           }
         },
       }),
@@ -692,6 +692,7 @@ export async function POST(req: Request) {
         parameters: z.object({ amount: z.string(), description: z.string().optional() }),
         execute: async ({ amount, description }) => {
           if (!ownerAddress || !isValidAddress(ownerAddress)) return { error: "No receiving address available. Connect a wallet or add a secret key." }
+          if (!/^\d+(\.\d+)?$/.test(amount) || Number(amount) <= 0) return { error: `Invalid amount "${amount}".` }
           return { kind: "paymentLink", url: `${APP_URL}/payment-link/${ownerAddress}/${amount}`, address: ownerAddress, amount: `${amount} ${NATIVE_SYMBOL}`, description }
         },
       }),

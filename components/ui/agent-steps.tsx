@@ -19,10 +19,9 @@ const LABELS: Record<string, string> = {
   getAddressActivity: "Reading address activity",
   explain: "Analysing on-chain data",
   sendPayment: "Preparing transfer",
-  deployToken: "Deploying token",
-  deployNFT: "Deploying NFT collection",
-  mintNFT: "Minting NFT",
-  deployContract: "Compiling & deploying contract",
+  deployToken: "Creating token",
+  deployNFT: "Creating NFT",
+  mintTokens: "Minting tokens",
   scheduleTransfer: "Scheduling payment",
   listSchedules: "Loading schedules",
   cancelSchedule: "Cancelling schedule",
@@ -52,7 +51,8 @@ function detailFor(inv: any): string | undefined {
     if (r.address) return short(r.address)
     if (r.url) return "link ready"
   }
-  if (typeof a.to === "string") return a.to.startsWith("0x") ? short(a.to) : a.to
+  // Long strings are addresses; short ones are contact names.
+  if (typeof a.to === "string") return a.to.length > 30 ? short(a.to) : a.to
   if (typeof a.target === "string") return short(a.target)
   if (typeof a.name === "string") return a.name
   if (typeof a.symbol === "string") return a.symbol

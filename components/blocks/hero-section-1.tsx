@@ -234,8 +234,8 @@ export function HeroSection() {
                                         <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>
                                     </svg>
                                 </div>
-                                <h3 className="mb-2 text-xl font-semibold">Contract Workflow Visualization</h3>
-                                <p className="text-muted-foreground">Generate interactive Mermaid diagrams to visualize smart contract workflows and interactions.</p>
+                                <h3 className="mb-2 text-xl font-semibold">Workflow Visualization</h3>
+                                <p className="text-muted-foreground">Generate Mermaid diagrams to visualize on-chain workflows, token flows, and program interactions.</p>
                             </div>
                             
                             {/* Feature 4 */}
@@ -332,7 +332,7 @@ export function HeroSection() {
                                                 <polyline points="22 4 12 14.01 9 11.01"/>
                                             </svg>
                                         </div>
-                                        <span><strong>Storage:</strong> MongoDB + Pinata IPFS for secure data and NFT metadata</span>
+                                        <span><strong>Storage:</strong> SQLite for schedules + Pinata IPFS for files and NFT metadata</span>
                                     </li>
                                 </ul>
                             </div>
@@ -354,22 +354,22 @@ export function HeroSection() {
                         <div className="mb-16 text-center">
                             <h2 className="mb-4 text-4xl font-bold md:text-5xl">Simple, Transparent Pricing</h2>
                             <p className="mx-auto max-w-2xl text-muted-foreground">
-                                Get started with our testnet access plan - more pricing options coming soon!
+                                Get started free on devnet - more pricing options coming soon!
                             </p>
                         </div>
                         
                         <div className="grid gap-8 justify-center">
-                            {/* Testnet Access Plan */}
+                            {/* Devnet Access Plan */}
                             <div className="flex flex-col rounded-xl border border-primary bg-card p-8 relative max-w-md mx-auto">
                                 <div className="absolute -top-4 left-1/2 -translate-x-1/2 rounded-full bg-primary px-3 py-1 text-sm font-medium text-primary-foreground">
                                     Available Now
                                 </div>
                                 
                                 <div className="mb-6">
-                                    <h3 className="mb-2 text-xl font-medium">Testnet Access</h3>
+                                    <h3 className="mb-2 text-xl font-medium">Devnet Access</h3>
                                     <div className="mb-2 flex items-baseline">
-                                        <span className="text-4xl font-bold">0.1 S</span>
-                                        <span className="text-muted-foreground ml-2">one-time</span>
+                                        <span className="text-4xl font-bold">Free</span>
+                                        <span className="text-muted-foreground ml-2">during beta</span>
                                     </div>
                                     <p className="text-muted-foreground">Full platform access on Solana devnet</p>
                                 </div>
@@ -387,7 +387,7 @@ export function HeroSection() {
                                             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
                                             <polyline points="22 4 12 14.01 9 11.01"/>
                                         </svg>
-                                        <span>Smart contract deployment</span>
+                                        <span>SOL & SPL token transfers</span>
                                     </li>
                                     <li className="flex items-center gap-2">
                                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-primary">
@@ -446,17 +446,17 @@ export function HeroSection() {
                         handle: "@sarahdev",
                         avatar: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&h=150&fit=crop&crop=face"
                       },
-                      text: "Astrax has completely transformed how I interact with smart contracts. Deploying an NFT collection used to take hours, now it's done in minutes with a simple chat command!",
+                      text: "Astrax has completely transformed how I work on-chain. Launching a token with proper metadata used to take hours, now it's done in seconds with a simple chat command!",
                       href: "https://twitter.com/sarahdev"
                     },
                     {
                       author: {
                         name: "Marcus Thompson",
-                        handle: "@marcussonic",
+                        handle: "@marcusbuilds",
                         avatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&h=150&fit=crop&crop=face"
                       },
                       text: "The payment scheduling feature is a game-changer for our DAO. Setting up monthly salary payments for 50+ contributors takes just one command. Incredible efficiency!",
-                      href: "https://twitter.com/marcuscrossfi"
+                      href: "https://twitter.com/marcusbuilds"
                     },
                     {
                       author: {
@@ -464,7 +464,7 @@ export function HeroSection() {
                         handle: "@elenaai",
                         avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face"
                       },
-                      text: "The workflow visualization with Mermaid diagrams helps our team understand complex contract interactions. The AI explanations are spot-on and incredibly helpful."
+                      text: "The explain feature breaks down any transaction or account in plain English, and the workflow diagrams help our team understand complex flows. Spot-on and incredibly helpful."
                     }
                   ]}
                 />

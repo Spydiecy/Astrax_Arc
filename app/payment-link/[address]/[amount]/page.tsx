@@ -7,9 +7,10 @@ import { Card } from "@/components/ui/card"
 import { Copy, ExternalLink } from "lucide-react"
 import QRCode from "qrcode"
 import { useConnection, useWallet } from "@solana/wallet-adapter-react"
-import { PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from "@solana/web3.js"
+import { PublicKey } from "@solana/web3.js"
+import { buildSolTransfer } from "@/lib/spl"
 import { CustomConnectButton } from "@/components/ui/connect-wallet-button"
-import { NATIVE_SYMBOL, explorerTx } from "@/lib/solana"
+import { NATIVE_SYMBOL, CLUSTER_LABEL, explorerTx, isValidAddress } from "@/lib/solana"
 
 export default function PaymentPortalPage() {
   const params = useParams()
@@ -17,8 +18,9 @@ export default function PaymentPortalPage() {
   const [paymentStatus, setPaymentStatus] = useState<"pending" | "processing" | "completed" | "failed">("pending")
   const [signature, setSignature] = useState<string>("")
 
-  const receiverAddress = params.address as string
-  const amount = params.amount as string
+  const receiverAddress = decodeURIComponent(params.address as string)
+  const amount = decodeURIComponent(params.amount as string)
+  const isValidLink = isValidAddress(receiverAddress) && /^\d+(\.\d+)?$/.test(amount) && Number(amount) > 0
 
   const { connection } = useConnection()
   const { publicKey, connected, sendTransaction } = useWallet()
@@ -38,8 +40,8 @@ export default function PaymentPortalPage() {
         console.error("Error generating QR code:", error)
       }
     }
-    if (receiverAddress && amount) generateQR()
-  }, [receiverAddress, amount])
+    if (isValidLink) generateQR()
+  }, [receiverAddress, amount, isValidLink])
 
   const sendPayment = async () => {
     if (!connected || !publicKey) {
@@ -48,20 +50,13 @@ export default function PaymentPortalPage() {
     }
     setPaymentStatus("processing")
     try {
-      const lamports = Math.round(Number.parseFloat(amount) * LAMPORTS_PER_SOL)
-      const tx = new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: publicKey,
-          toPubkey: new PublicKey(receiverAddress),
-          lamports,
-        }),
-      )
+      const tx = await buildSolTransfer(connection, publicKey, new PublicKey(receiverAddress), amount)
       const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized")
       tx.recentBlockhash = blockhash
-      tx.feePayer = publicKey
       const sig = await sendTransaction(tx, connection)
       setSignature(sig)
-      await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed")
+      const res = await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed")
+      if (res.value.err) throw new Error("Transaction failed on-chain")
       setPaymentStatus("completed")
     } catch (error: any) {
       console.error("Payment error:", error)
@@ -83,6 +78,17 @@ export default function PaymentPortalPage() {
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text)
     alert("Copied to clipboard!")
+  }
+
+  if (!isValidLink) {
+    return (
+      <div className="min-h-screen bg-white dark:bg-black text-black dark:text-white p-4 flex items-center justify-center">
+        <Card className="max-w-md w-full p-6 text-center border-gray-300 dark:border-gray-800">
+          <h1 className="text-2xl font-bold mb-2">Invalid payment link</h1>
+          <p className="text-gray-600 dark:text-gray-400 text-sm">This link has a malformed address or amount. Ask the sender for a new link.</p>
+        </Card>
+      </div>
+    )
   }
 
   return (
@@ -167,7 +173,7 @@ export default function PaymentPortalPage() {
         <Card className="bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-800 p-4">
           <div className="text-center text-sm text-gray-600 dark:text-gray-400">
             <p>This payment is sent directly on Solana</p>
-            <p>Network: Solana Devnet</p>
+            <p>Network: Solana {CLUSTER_LABEL}</p>
             <p>All transactions are recorded on-chain for transparency</p>
           </div>
         </Card>

@@ -32,12 +32,14 @@ Browser (useChat)  ──POST──▶  /api/agent  (Vercel AI SDK: streamText +
 ### Agent tools
 `getBalance`, `getTokenBalance`, `getTransaction`, `getLatestBlocks`, `getBlock`,
 `listTokens`, `getMarketData`, `getAddressActivity`, `resolveContact`, `saveContact`,
-`listContacts`, `sendPayment`, `deployToken`, `deployNFT`, `mintNFT`, `scheduleTransfer`,
+`listContacts`, `sendPayment`, `deployToken`, `deployNFT`, `mintTokens`, `scheduleTransfer`,
 `listSchedules`, `cancelSchedule`, `createPaymentLink`, `storeAsset`, `listAssets`,
 `getPriceChart`, `generateDiagram`, `generateImage`, `explain`, `swap`.
 
-`deployToken` creates a real SPL mint and mints the supply to the creator. `deployNFT`
-creates an SPL mint with supply 1 (optional IPFS metadata via Pinata).
+`deployToken` creates a Token-2022 mint with on-chain name/symbol metadata and mints the
+supply to the creator. `deployNFT` creates a 1-of-1 (0 decimals, supply 1, mint authority
+revoked) with optional IPFS metadata via Pinata. Deploying arbitrary programs from chat is
+not supported. See `FEATURES.md` for details.
 
 ---
 

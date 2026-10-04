@@ -2,22 +2,27 @@
 
 import { useCallback, useState } from "react"
 import { useConnection, useWallet } from "@solana/wallet-adapter-react"
-import { Transaction } from "@solana/web3.js"
+import type { Keypair, Transaction } from "@solana/web3.js"
 import { Loader2, Zap, CheckCircle2, ArrowUpRight } from "lucide-react"
 import { explorerTx } from "@/lib/solana"
+import { buildCreateToken, deserializeTx } from "@/lib/spl"
 
 export interface PendingAction {
-  action: "sendNative" | "sendToken" | "deployToken" | "deployNFT" | "mintNFT"
+  action: "sendNative" | "sendToken" | "deployToken" | "deployNFT" | "mintTokens"
   label: string
-  /** base64-encoded transaction built server-side; signed & sent in the wallet. */
-  txBase64: string
+  /** Server-prepared transaction (transfers / mint-to). Absent for create actions. */
+  txBase64?: string
   to?: string
-  contract?: string
   mint?: string
   symbol?: string
   amount?: string
+  // Create-token / NFT params — the tx is built in the browser so the fresh
+  // mint keypair can co-sign without ever leaving this page.
   name?: string
   supply?: string
+  decimals?: number
+  uri?: string
+  fixedSupply?: boolean
   metadataUri?: string
   image?: string
 }
@@ -26,13 +31,14 @@ const short = (a?: string) => (a && a.length > 12 ? `${a.slice(0, 6)}…${a.slic
 
 export function TxActionButton({ action, onDone }: { action: PendingAction; onDone?: (sig: string) => void }) {
   const { connection } = useConnection()
-  const { sendTransaction, connected } = useWallet()
+  const { publicKey, sendTransaction, connected } = useWallet()
   const [signature, setSignature] = useState<string>()
+  const [createdMint, setCreatedMint] = useState<string>()
   const [phase, setPhase] = useState<"idle" | "wallet" | "mining" | "done" | "error">("idle")
   const [errMsg, setErrMsg] = useState("")
 
   const execute = useCallback(async () => {
-    if (!connected) {
+    if (!connected || !publicKey) {
       setErrMsg("Connect your wallet first.")
       setPhase("error")
       return
@@ -40,21 +46,43 @@ export function TxActionButton({ action, onDone }: { action: PendingAction; onDo
     setPhase("wallet")
     setErrMsg("")
     try {
-      const tx = Transaction.from(Buffer.from(action.txBase64, "base64"))
-      // Refresh the blockhash in case the prepared one expired while displayed.
+      let tx: Transaction
+      const signers: Keypair[] = []
+      if (action.action === "deployToken" || action.action === "deployNFT") {
+        const built = await buildCreateToken(connection, publicKey, {
+          name: action.name || "Token",
+          symbol: action.symbol || "TKN",
+          uri: action.uri || "",
+          decimals: action.decimals ?? 9,
+          supply: action.supply || "0",
+          fixedSupply: action.fixedSupply,
+        })
+        tx = built.tx
+        signers.push(built.mint)
+        setCreatedMint(built.mint.publicKey.toBase58())
+      } else {
+        if (!action.txBase64) throw new Error("Missing prepared transaction")
+        tx = deserializeTx(action.txBase64)
+        if (tx.feePayer && !tx.feePayer.equals(publicKey)) {
+          throw new Error("This transaction was prepared for a different wallet. Ask Astrax again with this wallet connected.")
+        }
+      }
+      // Fresh blockhash so a card that sat for a while still confirms.
       const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized")
       tx.recentBlockhash = blockhash
-      const sig = await sendTransaction(tx, connection)
+      tx.feePayer = publicKey
+      const sig = await sendTransaction(tx, connection, { signers })
       setSignature(sig)
       setPhase("mining")
-      await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed")
+      const res = await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed")
+      if (res.value.err) throw new Error(`Transaction failed on-chain: ${JSON.stringify(res.value.err)}`)
       setPhase("done")
       onDone?.(sig)
     } catch (e: any) {
-      setErrMsg((e?.message || "Transaction rejected").slice(0, 140))
+      setErrMsg((e?.message || "Transaction rejected").slice(0, 160))
       setPhase("error")
     }
-  }, [action, connection, sendTransaction, connected, onDone])
+  }, [action, connection, publicKey, sendTransaction, connected, onDone])
 
   if (phase === "done") {
     return (
@@ -62,12 +90,12 @@ export function TxActionButton({ action, onDone }: { action: PendingAction; onDo
         <div className="flex items-center gap-2 text-sm font-medium text-green-700 dark:text-green-300">
           <CheckCircle2 className="w-4 h-4" /> Confirmed
         </div>
-        {action.mint && (
-          <div className="mt-1 text-xs font-mono text-green-700 dark:text-green-300">Mint: {short(action.mint)}</div>
+        {createdMint && (
+          <div className="mt-1 text-xs font-mono text-green-700 dark:text-green-300 break-all">Mint: {createdMint}</div>
         )}
         {signature && (
           <a href={explorerTx(signature)} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs text-green-700 dark:text-green-300 hover:underline">
-            View on Solana Explorer <ArrowUpRight className="w-3 h-3" />
+            View on Solana Explorer ({short(signature)}) <ArrowUpRight className="w-3 h-3" />
           </a>
         )}
       </div>

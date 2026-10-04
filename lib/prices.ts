@@ -3,7 +3,7 @@
 //   -> { "data": { "amount": "0.999795", "base": "USDT", "currency": "USD" } }
 // Historical candles use Coinbase's Exchange product candles when a market exists;
 // otherwise we build a short indicative series from the current spot price (useful
-// for testnet tokens like S that have no live market).
+// for tokens that have no live Coinbase market).
 
 export interface Candle {
   timestamp: number

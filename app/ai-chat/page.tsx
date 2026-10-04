@@ -151,9 +151,9 @@ function ToolCard({ result }: { result: any }) {
       )
     case "transaction":
       return (
-        <CardShell icon={<ArrowUpRight className="w-4 h-4" />} title={result.action === "send" ? "Payment Sent" : result.action === "mint" ? "NFT Minted" : "Transaction"}>
+        <CardShell icon={<ArrowUpRight className="w-4 h-4" />} title={result.action === "send" ? "Payment Sent" : result.action === "mint" ? "Tokens Minted" : "Transaction"}>
           <div className="flex items-center justify-between gap-3 text-sm py-1">
-            <span className="text-gray-500 dark:text-gray-400">Hash</span>
+            <span className="text-gray-500 dark:text-gray-400">Signature</span>
             <span className="font-mono text-xs flex items-center gap-1">{short(result.hash)} <CopyBtn value={result.hash} /></span>
           </div>
           {result.status && <Field label="Status">{result.status}</Field>}
@@ -161,7 +161,7 @@ function ToolCard({ result }: { result: any }) {
           {result.to && <Field label="To">{short(result.to)}</Field>}
           {result.value && <Field label="Value">{result.value}</Field>}
           {result.blockNumber && <Field label="Block">{result.blockNumber}</Field>}
-          {result.gasUsed && <Field label="Gas Used">{result.gasUsed}</Field>}
+          {result.fee && <Field label="Fee">{result.fee}</Field>}
           <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
             View on Solana Explorer <ArrowUpRight className="w-3.5 h-3.5" />
           </a>
@@ -182,12 +182,11 @@ function ToolCard({ result }: { result: any }) {
       )
     case "block":
       return (
-        <CardShell icon={<Boxes className="w-4 h-4" />} title={`Block #${result.blockNumber}`}>
+        <CardShell icon={<Boxes className="w-4 h-4" />} title={`Slot #${result.blockNumber}`}>
           <Field label="Hash">{short(result.hash)}</Field>
           <Field label="Time">{result.timestamp}</Field>
           <Field label="Transactions">{result.transactionCount}</Field>
-          <Field label="Gas Used">{result.gasUsed}</Field>
-          {result.miner && <Field label="Miner">{short(result.miner)}</Field>}
+          {result.parentSlot && <Field label="Parent slot">{result.parentSlot}</Field>}
         </CardShell>
       )
     case "tokenList":
@@ -221,8 +220,8 @@ function ToolCard({ result }: { result: any }) {
             )}
             {result.transactions.map((t: any) => (
               <a key={t.hash} href={explorerTx(t.hash)} target="_blank" rel="noreferrer" className="block rounded border border-gray-200 dark:border-gray-800 p-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-900">
-                <div className="flex justify-between"><span className="font-mono text-xs">{short(t.hash)}</span><span className="text-gray-500">{t.value}</span></div>
-                <div className="text-xs text-gray-500">{short(t.from)} → {short(t.to)}</div>
+                <div className="flex justify-between"><span className="font-mono text-xs">{short(t.hash)}</span><span className={t.status === "Failed" ? "text-red-500" : "text-gray-500"}>{t.status}</span></div>
+                {t.timestamp && <div className="text-xs text-gray-500">{t.timestamp}</div>}
               </a>
             ))}
             {result.explorerUrl && (
@@ -235,7 +234,7 @@ function ToolCard({ result }: { result: any }) {
       )
     case "deploy":
       return (
-        <CardShell icon={<Rocket className="w-4 h-4" />} title={result.what === "token" ? "Token Deployed" : result.what === "nft" ? "NFT Collection Deployed" : "Contract Deployed"}>
+        <CardShell icon={<Rocket className="w-4 h-4" />} title={result.what === "nft" ? "NFT Created" : "Token Created"}>
           {result.name && <Field label="Name">{result.name}{result.symbol ? ` (${result.symbol})` : ""}</Field>}
           {result.supply && <Field label="Supply">{result.supply}</Field>}
           {result.image && (
@@ -243,7 +242,7 @@ function ToolCard({ result }: { result: any }) {
             <img src={result.image} alt="NFT artwork" className="my-2 max-h-40 rounded-md border border-gray-200 dark:border-gray-800" />
           )}
           <div className="flex items-center justify-between gap-3 text-sm py-1">
-            <span className="text-gray-500 dark:text-gray-400">Contract</span>
+            <span className="text-gray-500 dark:text-gray-400">Mint</span>
             <span className="font-mono text-xs flex items-center gap-1">{short(result.contractAddress)} <CopyBtn value={result.contractAddress || ""} /></span>
           </div>
           <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">

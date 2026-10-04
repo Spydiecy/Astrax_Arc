@@ -41,7 +41,7 @@ export function CustomConnectButton() {
                 return (
                   <Button
                     onClick={openConnectModal}
-                    className="bg-white text-black border border-gray-300 hover:bg-gray-100"
+                    className="bg-gray-900 text-white dark:bg-white dark:text-black border border-gray-300 dark:border-gray-700 hover:bg-gray-800 dark:hover:bg-gray-200"
                   >
                     Connect Wallet
                   </Button>
@@ -63,7 +63,7 @@ export function CustomConnectButton() {
                 <div className="flex gap-2">
                   <Button
                     onClick={openChainModal}
-                    className="bg-white text-black border border-gray-300 hover:bg-gray-100"
+                    className="bg-white dark:bg-black text-black dark:text-white border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-900"
                   >
                     {chain.hasIcon && (
                       <div
@@ -90,7 +90,7 @@ export function CustomConnectButton() {
 
                   <Button
                     onClick={openAccountModal}
-                    className="bg-white text-black border border-gray-300 hover:bg-gray-100"
+                    className="bg-white dark:bg-black text-black dark:text-white border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-900"
                   >
                     {account.displayName}
                     {account.displayBalance

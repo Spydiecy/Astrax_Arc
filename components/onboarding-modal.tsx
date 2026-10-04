@@ -4,7 +4,7 @@ import { useState } from "react"
 import {
   Sparkles, Wallet, Zap, ArrowRight, ArrowLeft, Check,
   Send, Rocket, Link2, CalendarClock, Boxes, X,
-  LineChart, GitBranch, Image as ImageIcon, FileUp,
+  LineChart, GitBranch, Image as ImageIcon, FileUp, Lock,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -29,9 +29,9 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
           </p>
           <div className="grid grid-cols-2 gap-2 pt-1">
             {[
-              { icon: <Send className="w-4 h-4" />, label: "Send tokens" },
-              { icon: <Rocket className="w-4 h-4" />, label: "Deploy tokens" },
-              { icon: <Link2 className="w-4 h-4" />, label: "Payment links" },
+              { icon: <Send className="w-4 h-4" />, label: "Send SOL & tokens" },
+              { icon: <Rocket className="w-4 h-4" />, label: "Create tokens & NFTs" },
+              { icon: <Link2 className="w-4 h-4" />, label: "Tracked payment links" },
               { icon: <CalendarClock className="w-4 h-4" />, label: "Schedule payments" },
               { icon: <Boxes className="w-4 h-4" />, label: "Explore the chain" },
               { icon: <LineChart className="w-4 h-4" />, label: "Price charts" },
@@ -45,6 +45,10 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
               </div>
             ))}
           </div>
+          <p className="flex items-start gap-2 text-xs text-gray-500 dark:text-gray-400">
+            <Lock className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+            Your chats are saved only in this browser, for privacy. Clearing site data or using a private window deletes them.
+          </p>
         </div>
       ),
     },
@@ -70,7 +74,8 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
               Paste a secret key (your address is derived automatically). Astrax signs for you — no
               popups — which unlocks hands-free features like <strong>scheduled payments</strong>.
-              Devnet only; the key is never stored or put in the prompt.
+              Devnet only. The key stays in this browser and is never put in the prompt; it&apos;s only
+              stored (encrypted) on the server for payments you schedule.
             </p>
           </div>
         </div>

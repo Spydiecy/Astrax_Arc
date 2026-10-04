@@ -6,7 +6,11 @@ export interface ChatMeta {
   id: string
   title: string
   updatedAt: number
+  /** Set when the user renamed the chat; the title is then never auto-replaced. */
+  renamed?: boolean
 }
+
+export const MAX_TITLE = 60
 
 export interface StoredMessage {
   id: string
@@ -125,10 +129,32 @@ export function saveMessages(id: string, messages: StoredMessage[]) {
     }
   }
 
+  const existing = getChats().find((c) => c.id === id)
   const firstUser = messages.find((m) => m.role === "user")
-  const title = (firstUser?.content || "New chat").replace(/\s+/g, " ").trim().slice(0, 48) || "New chat"
+  const autoTitle = (firstUser?.content || "New chat").replace(/\s+/g, " ").trim().slice(0, 48) || "New chat"
   const list = getChats().filter((c) => c.id !== id)
-  list.unshift({ id, title, updatedAt: Date.now() })
+  list.unshift(
+    existing?.renamed
+      ? { ...existing, updatedAt: Date.now() }
+      : { id, title: autoTitle, updatedAt: Date.now() },
+  )
+  writeIndex(list)
+}
+
+/** Rename a chat. An empty title restores the automatic one (first message). */
+export function renameChat(id: string, title: string) {
+  const list = getChats()
+  const c = list.find((x) => x.id === id)
+  if (!c) return
+  const clean = title.replace(/\s+/g, " ").trim().slice(0, MAX_TITLE)
+  if (clean) {
+    c.title = clean
+    c.renamed = true
+  } else {
+    const firstUser = getMessages(id).find((m) => m.role === "user")
+    c.title = (firstUser?.content || "New chat").replace(/\s+/g, " ").trim().slice(0, 48) || "New chat"
+    delete c.renamed
+  }
   writeIndex(list)
 }
 

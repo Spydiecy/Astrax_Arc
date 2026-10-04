@@ -1,50 +1,92 @@
-# Astrax — Feature Notes
+# Astrax — Features
 
-An AI agent for **Solana** (default cluster: devnet, native token **SOL**, 9 decimals) that
-turns natural-language chat into on-chain actions. One Next.js app; the agent is a Vercel AI
-SDK route at `/api/agent` (`streamText` + `tool` + `zod`) streamed to the browser via `useChat`.
+An AI agent for **Solana** (default cluster: devnet; native token **SOL**, 9 decimals)
+that turns chat into on-chain actions.
 
-## Network config
-- `NEXT_PUBLIC_CLUSTER`: `devnet` (default) | `testnet` | `mainnet-beta`
-- RPC: `SOLANA_RPC_URL` (server) / `NEXT_PUBLIC_RPC_URL` (browser), else the public cluster RPC
-- Explorer: `https://explorer.solana.com` (cluster query param added automatically)
-- Known tokens (`lib/solana.ts`): SOL, plus Circle's USDC mint for the active cluster
+## Network
+- `NEXT_PUBLIC_CLUSTER`: `devnet` (default), `testnet` or `mainnet-beta`.
+- RPC: `SOLANA_RPC_URL` (server) / `NEXT_PUBLIC_RPC_URL` (browser), else the public RPC.
+- Explorer links go to `explorer.solana.com` with the right cluster.
+- Known tokens (`lib/solana.ts`): SOL, plus Circle's USDC mint for the active cluster.
 
-## Frontend
-- Landing page, dashboard chat (`/ai-chat`) with collapsible sidebar, theme toggle, chat history.
-- **Wallet**: Solana Wallet Adapter; any Wallet Standard wallet (Phantom, Solflare, Backpack…)
-  is detected automatically.
-- **Signing modes**:
-  - *Wallet* — the agent returns a prepared transaction; the user confirms it in-wallet via a
-    button in the chat. Token/NFT creation is built in the browser so the new mint keypair can
-    co-sign locally.
-  - *Autonomous* — the user pastes a base58 (or JSON byte array) secret key; the server signs.
-- **Rich chat cards** for balances, transactions, slots, token lists, candlestick charts,
-  token/NFT creation, schedules, payment links, contacts, assets and the explain view.
-- **Payment links**: `/payment-link/<address>/<amount>` with a Solana Pay QR code and a
-  one-click SOL transfer.
-- IPFS uploads via Pinata, Mermaid diagrams, optional Gemini image generation, voice input.
+## Chat
+- Streaming replies from Mistral `ministral-8b-latest` (Gemini fallback). Each tool
+  result renders as a card under the reply.
+- **Copy** any message, **edit** your own (it reruns from there), **regenerate** the
+  latest reply. If the run being replaced already moved funds, you're warned first.
+- **Chat history** with rename (pencil icon, double-click, or F2) and delete.
+- **Stored only in your browser** (localStorage), for privacy. Nothing about your chats
+  is kept on the server. Clearing site data or using a private window deletes them, and
+  they don't sync to other devices. Large generated images aren't kept in history.
+- Saves while a reply streams and syncs between open tabs. A failed request keeps your
+  message and shows **Retry**.
+- Replies render markdown (links, lists, tables, code). Raw HTML is never rendered.
+- File attachments upload to IPFS through the server (`/api/upload`). Voice input via the
+  browser's speech API.
+
+## Wallet and signing
+- **Wallet mode:** any Wallet Standard wallet (Phantom, Solflare, Backpack…) is detected
+  automatically. The agent prepares each transaction and a confirm button appears under
+  its reply. Token and NFT creation is built in the browser so the new mint key never
+  leaves it. Confirmed transactions are remembered, so a reload never offers to pay
+  twice.
+- **Autonomous mode:** paste a base58 (or JSON byte array) secret key. The server signs
+  immediately. There are no buttons.
+- The agent is told only the active mode, so replies match it.
 
 ## Agent tools
-Read: `getBalance`, `getTokenBalance`, `getTransaction`, `getLatestBlocks`, `getBlock`,
-`listTokens`, `getMarketData`, `getAddressActivity`, `explain`, `getPriceChart`.
+- **Read:** `getBalance`, `getTokenBalance`, `getTransaction`, `getLatestBlocks`,
+  `getBlock`, `listTokens`, `getMarketData`, `getAddressActivity`, `explain`,
+  `getPriceChart`.
+- **Write:**
+  - `sendPayment`: SOL, or any SPL / Token-2022 token.
+  - `deployToken`: Token-2022 mint with on-chain name/symbol.
+  - `deployNFT`: 1-of-1, mint authority revoked, optional IPFS metadata.
+  - `mintTokens`.
+  - `scheduleTransfer` / `listSchedules` / `cancelSchedule`.
+  - `createPaymentLink` / `listPaymentLinks`.
+- **Utility:** address book (`saveContact`, `resolveContact`, `listContacts`), assets
+  (`storeAsset`, `listAssets`), `generateDiagram` (Mermaid), `generateImage` (Gemini,
+  optional), and `swap` (a stub until a DEX is configured via `SOLANA_DEX`).
+- Not supported: deploying arbitrary on-chain programs from chat.
 
-Write: `sendPayment` (SOL or any SPL / Token-2022 token), `deployToken` (Token-2022 mint with
-on-chain name/symbol metadata), `deployNFT` (1-of-1, 0 decimals, mint authority revoked,
-optional IPFS metadata), `mintTokens`, `scheduleTransfer` / `listSchedules` /
-`cancelSchedule`, `createPaymentLink`.
-
-Utility: address book (`saveContact`, `resolveContact`, `listContacts`), assets
-(`storeAsset`, `listAssets`), `generateDiagram`, `generateImage`, `swap` (stub until a DEX is
-configured via `SOLANA_DEX`).
-
-Not supported: deploying arbitrary on-chain programs from chat.
+## Payment links
+- Created in chat ("payment link for 0.5 SOL for logo design"). Saved in SQLite, shared
+  as `/pay/<id>` on whatever domain the app is opened on.
+- **Pay page:** shows the amount, description, a Solana Pay QR code and a Pay button. It
+  refreshes every 5 seconds while open.
+- **Tracking:** each link has a random reference key that the payment includes. The
+  server finds payments via that key and checks that the recipient received at least the
+  amount in a confirmed transaction, then marks the link **paid** with the signature,
+  payer and time.
+- **Only payable by others:** the creator sees no Pay button, and payments they make
+  don't count.
+- Checks run when the pay page, the sidebar tab or the chat looks at the link. A payment
+  made while nobody is watching shows up at the next check.
+- **Sidebar "Payment links" tab:** status, copy, open, the payment transaction, and
+  cancel (owner only).
 
 ## Scheduled payments
-Autonomous mode only. The secret key is AES-256-GCM encrypted (`SCHEDULER_ENC_KEY`) and stored
-in SQLite (`.data/astrax.db`); `/api/cron/execute` (Vercel Cron, guarded by `CRON_SECRET` in
-production) signs due jobs and wipes the key once a job finishes or is cancelled.
+- One-time or recurring ("pay alice 1 SOL every week, 4 times"), autonomous mode only.
+- The key is AES-256-GCM encrypted (`SCHEDULER_ENC_KEY`) in SQLite, used by
+  `/api/cron/execute`, and wiped once the job finishes or is cancelled.
+- In dev the open app triggers the job every minute. In production, Vercel Cron calls it
+  with `CRON_SECRET`.
+- **Sidebar "Scheduled" tab:** list and cancel (owner only).
 
-## Security note
-Letting the agent hold a raw secret key is inherently risky. It's opt-in, kept out of prompts
-and logs, and intended for devnet. On mainnet, use wallet signing.
+## Proving ownership
+- Viewing or cancelling payment links and schedules (and listing stored assets) requires
+  proving you control the address, by signing a free sign-in message:
+  - **Wallet mode:** the wallet signs it (one popup, no transaction).
+  - **Autonomous mode:** the loaded key signs it silently.
+- The server verifies the signature and sets an HttpOnly session cookie for 7 days
+  (`AUTH_SECRET`). Signed messages are single-use, expire after 5 minutes, and are bound
+  to the site's domain. Disconnecting the wallet ends its session.
+- Pay pages stay public, since payers need them.
+
+## Storage and deployment
+- **Browser:** chats.
+- **`.data/astrax.db` (SQLite):** schedules and payment links.
+- **`.data/astrax.json`:** address book and assets.
+- The `.data` files need a persistent disk. On Vercel's read-only, temporary function
+  filesystem they must move to a hosted database (see the README).

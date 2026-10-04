@@ -1,75 +1,67 @@
-import { createHash } from "crypto"
+// Server-only Pinata (IPFS) helpers. Never import from a client component:
+// PINATA_JWT must stay on the server. The browser uploads through /api/upload.
+//
+// Uses Pinata's v3 Files API directly with network=public, so content is pinned to
+// public IPFS and resolvable by wallets/explorers (needed for NFT metadata).
+import "server-only"
 
-// You'll need to install and configure the Pinata client
-// npm install pinata-web3
-import { PinataSDK } from "pinata"
+const UPLOAD_URL = "https://uploads.pinata.cloud/v3/files"
 
-function createPinataClient() {
-  return new PinataSDK({
-    pinataJwt: process.env.NEXT_PUBLIC_PINATA_JWT!,
-    pinataGateway: "example-gateway.mypinata.cloud",
-  })
+export interface IpfsUpload {
+  cid: string
+  /** Gateway URL (dedicated gateway if PINATA_GATEWAY is set, else ipfs.io). */
+  ipfsUrl: string
+  /** Pinata file id (used to manage/delete the file). */
+  id: string
+  size: number
 }
 
 export function isPinataConfigured(): boolean {
-  return Boolean(process.env.NEXT_PUBLIC_PINATA_JWT)
+  return Boolean(process.env.PINATA_JWT)
 }
 
-/** Upload a JSON object to IPFS; returns the CID (hash) and a gateway URL. */
-export async function uploadJSONToIPFS(jsonMetadata: any): Promise<{ ipfsUrl: string; cid: string; contentHash: string }> {
-  const pinata = createPinataClient()
-
-  try {
-    const res: any = await pinata.upload.json(jsonMetadata)
-    const cid: string = res?.cid ?? res?.IpfsHash ?? String(res)
-    const contentHash = createHash("sha256").update(JSON.stringify(jsonMetadata)).digest("hex")
-
-    return {
-      ipfsUrl: `https://ipfs.io/ipfs/${cid}`,
-      cid,
-      contentHash: `0x${contentHash}`,
-    }
-  } catch (error) {
-    console.error("Failed to upload JSON to IPFS:", error)
-    throw new Error(`IPFS upload failed: ${error instanceof Error ? error.message : "Unknown error"}`)
-  }
+function gatewayHost(): string | null {
+  const raw = process.env.PINATA_GATEWAY?.trim()
+  if (!raw) return null
+  return raw.replace(/^https?:\/\//, "").replace(/\/+$/, "")
 }
-// function to be implemented soon->>>>>>>>
-// export async function fetchImageUrl(cid:any){
-//     try {
-//     let p=await createPinataClient();
-//       const url = await p.gateways.createSignedURL({
-//         gateway:"violet-wrong-herring-709.mypinata.cloud",
-//          cid: cid,
-//           expires: 1800000000000,
-//       })
-//       console.log(url);
-//       return url;
-  
-//     } catch (error) {
-//       console.log(error);
-//       return "";
-//     }
-  
-//   }
-export async function uploadFileToIPFS(file: File): Promise<{ ipfsUrl: string; contentHash: string }> {
-  const pinata = new PinataSDK({
-    pinataJwt: process.env.NEXT_PUBLIC_PINATA_JWT!,
-    pinataGateway: "example-gateway.mypinata.cloud",
-  });
-  
-  try {
-    const  IpfsHash  = await pinata.upload.file(file)
-    
-    // Create content hash from file buffer
-    console.log("My IPFS Hash Coming From Pinata Storage is::::",IpfsHash);    
-    
-    return {
-      ipfsUrl: `https://ipfs.io/ipfs/${IpfsHash.cid}`,
-      contentHash: `0xxx`,
-    }
-  } catch (error) {
-    console.error("Failed to upload file to IPFS:", error)
-    throw new Error(`IPFS upload failed: ${error instanceof Error ? error.message : "Unknown error"}`)
+
+export function gatewayUrl(cid: string): string {
+  const host = gatewayHost()
+  return host ? `https://${host}/ipfs/${cid}` : `https://ipfs.io/ipfs/${cid}`
+}
+
+async function uploadBlob(blob: Blob, name: string): Promise<IpfsUpload> {
+  const jwt = process.env.PINATA_JWT
+  if (!jwt) throw new Error("IPFS uploads aren't configured (PINATA_JWT is missing).")
+
+  const form = new FormData()
+  form.append("file", blob, name)
+  form.append("network", "public")
+  form.append("name", name)
+
+  const res = await fetch(UPLOAD_URL, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${jwt}` },
+    body: form,
+  })
+  const text = await res.text()
+  if (!res.ok) {
+    // Pinata error bodies don't contain the JWT; keep them short for logs/UI.
+    throw new Error(`Pinata upload failed (${res.status}): ${text.slice(0, 200)}`)
   }
+  const data = JSON.parse(text)?.data
+  if (!data?.cid) throw new Error("Pinata upload returned no CID")
+  return { cid: data.cid, id: data.id, size: data.size, ipfsUrl: gatewayUrl(data.cid) }
+}
+
+/** Upload a JSON object (e.g. NFT metadata) to public IPFS. */
+export async function uploadJSONToIPFS(json: unknown, name = "metadata.json"): Promise<IpfsUpload> {
+  const blob = new Blob([JSON.stringify(json)], { type: "application/json" })
+  return uploadBlob(blob, name)
+}
+
+/** Upload a file (from a multipart request) to public IPFS. */
+export async function uploadFileToIPFS(file: File): Promise<IpfsUpload> {
+  return uploadBlob(file, file.name || "upload")
 }

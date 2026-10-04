@@ -43,7 +43,7 @@ const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
 function getModel() {
   if (process.env.MISTRAL_API_KEY) {
     const mistral = createMistral({ apiKey: process.env.MISTRAL_API_KEY })
-    return mistral(process.env.ASTRAX_MODEL || "mistral-large-latest")
+    return mistral(process.env.ASTRAX_MODEL || "ministral-8b-latest")
   }
   const key = process.env.GOOGLE_GENERATIVE_AI_API_KEY
   if (key) {

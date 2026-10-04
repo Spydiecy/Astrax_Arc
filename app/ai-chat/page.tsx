@@ -17,7 +17,7 @@ import { TxActionButton, type PendingAction } from "@/components/ui/tx-action-bu
 import TokenListCard from "@/components/ui/token-list-card"
 import CandlestickChart from "@/components/ui/candlestick-chart"
 import { AgentSteps } from "@/components/ui/agent-steps"
-import { uploadFileToIPFS } from "@/lib/pinata"
+
 import { getCurrentId, newChat, getMessages, saveMessages } from "@/lib/chat-history"
 import { explorerTx } from "@/lib/solana"
 import type { Message } from "@ai-sdk/react"
@@ -85,13 +85,14 @@ const CardShell = ({ icon, title, children }: { icon: React.ReactNode; title: st
 
 const short = (a?: string) => (a && a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a || "")
 
-function fileToDataURL(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader()
-    r.onload = () => resolve(r.result as string)
-    r.onerror = reject
-    r.readAsDataURL(file)
-  })
+/** Upload a file to IPFS through the server (the Pinata key stays server-side). */
+async function uploadToIPFS(file: File): Promise<string> {
+  const form = new FormData()
+  form.append("file", file)
+  const res = await fetch("/api/upload", { method: "POST", body: form })
+  const j = await res.json().catch(() => ({}))
+  if (!res.ok || !j.ipfsUrl) throw new Error(j.error || `Upload failed (${res.status})`)
+  return j.ipfsUrl as string
 }
 
 // ── Image / diagram card (generated images + mermaid diagrams) ──────────────────
@@ -520,21 +521,20 @@ function ChatSession({ chatId }: { chatId: string }) {
       setUploading(true)
       try {
         const links: string[] = []
+        const previews: { name: string; contentType: string; url: string }[] = []
         for (const f of files) {
-          const { ipfsUrl } = await uploadFileToIPFS(f)
+          const ipfsUrl = await uploadToIPFS(f)
           links.push(`${f.name}: ${ipfsUrl}`)
+          // Thumbnail in the user's bubble, served from IPFS (keeps saved history small).
+          if (f.type.startsWith("image/")) previews.push({ name: f.name, contentType: f.type, url: ipfsUrl })
         }
-        // Image thumbnails to show inside the user's own message bubble.
-        const previews = await Promise.all(
-          files.filter((f) => f.type.startsWith("image/")).map(async (f) => ({ name: f.name, contentType: f.type, url: await fileToDataURL(f) })),
-        )
         const base = input.trim() ? `${input.trim()}\n\n` : ""
         const text = `${base}I attached file(s) uploaded to IPFS: ${links.join(" | ")}. Use the IPFS URL as needed — e.g. as the \`image\` for deployNFT, or save it with storeAsset.`
         setInput("")
         setFiles([])
         append({ role: "user", content: text, experimental_attachments: previews })
-      } catch {
-        alert("IPFS upload failed. Add NEXT_PUBLIC_PINATA_JWT to enable file uploads.")
+      } catch (err: any) {
+        alert(`IPFS upload failed: ${err?.message || "unknown error"}`)
       } finally {
         setUploading(false)
       }

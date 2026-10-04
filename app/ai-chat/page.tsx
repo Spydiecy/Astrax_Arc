@@ -18,43 +18,13 @@ import { TxActionButton, type PendingAction } from "@/components/ui/tx-action-bu
 import TokenListCard from "@/components/ui/token-list-card"
 import CandlestickChart from "@/components/ui/candlestick-chart"
 import { AgentSteps } from "@/components/ui/agent-steps"
+import { Markdown } from "@/components/ui/markdown"
 
 import { getCurrentId, newChat, getMessages, saveMessages, chatStorageKey } from "@/lib/chat-history"
 import { explorerTx } from "@/lib/solana"
 import { absoluteUrl } from "@/lib/origin"
 import { VerifyWalletPrompt } from "@/components/verify-wallet"
 import type { Message } from "@ai-sdk/react"
-
-// ── Minimal markdown renderer (bold / code / lists / breaks) ────────────────────
-function Markdown({ text }: { text: string }) {
-  const fmt = (line: string, key: string | number) => {
-    const parts = line.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)
-    return (
-      <span key={key}>
-        {parts.map((p, j) => {
-          if (p.startsWith("**") && p.endsWith("**"))
-            return <strong key={j} className="font-semibold">{p.slice(2, -2)}</strong>
-          if (p.startsWith("`") && p.endsWith("`"))
-            return <code key={j} className="font-mono text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-800">{p.slice(1, -1)}</code>
-          return <span key={j}>{p}</span>
-        })}
-      </span>
-    )
-  }
-  const lines = text.split("\n")
-  return (
-    <div className="space-y-1 leading-relaxed">
-      {lines.map((line, i) => {
-        if (line.trim() === "") return <div key={i} className="h-1" />
-        if (line.startsWith("- ") || line.startsWith("• "))
-          return <div key={i} className="flex gap-2"><span>•</span><span>{fmt(line.slice(2), i)}</span></div>
-        if (/^\d+\.\s/.test(line))
-          return <div key={i} className="pl-1">{fmt(line, i)}</div>
-        return <p key={i}>{fmt(line, i)}</p>
-      })}
-    </div>
-  )
-}
 
 // The model sometimes invents UI markup such as "<ConfirmButton>" for the button
 // the app renders itself. Strip component-style (PascalCase) tags, including a
@@ -68,6 +38,47 @@ function cleanAssistantText(text: string): string {
   // Trailing separators left behind by the removals above.
   t = t.replace(/(\s*(^|\n)\s*(-{3,}|\*{3,}|_{3,})\s*)+$/, "")
   return t.replace(/\s+$/, "").replace(/:$/, ".")
+}
+
+// URLs that this message's tool cards already display (payment links, explorer links).
+function cardUrls(invocations: any[]): Set<string> {
+  const urls = new Set<string>()
+  const add = (u?: string) => {
+    if (typeof u !== "string" || !u) return
+    urls.add(u)
+    try { urls.add(new URL(u).pathname) } catch { /* relative */ }
+  }
+  for (const inv of invocations ?? []) {
+    const r = inv?.result
+    if (!r) continue
+    add(r.url); add(r.path); add(r.explorerUrl)
+    for (const l of r.links ?? []) { add(l.url); add(l.path) }
+  }
+  return urls
+}
+
+/**
+ * Drop lines whose only content is a link the card below already shows
+ * (e.g. "🔗 **[0.01 SOL](http://…/pay/pl_…)**"). Links inside a sentence stay.
+ */
+function dropCardLinkLines(text: string, urls: Set<string>): string {
+  if (urls.size === 0) return text
+  const known = (href: string) => {
+    if (urls.has(href)) return true
+    try { return urls.has(new URL(href).pathname) } catch { return false }
+  }
+  const out = text.split("\n").filter((line) => {
+    let hit = false
+    const rest = line
+      .replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (m, _t, href) => (known(href) ? ((hit = true), "") : m))
+      .replace(/https?:\/\/[^\s)<>*]+/g, (m) => {
+        const url = m.replace(/[.,;:!?]+$/, "")
+        return known(url) ? ((hit = true), m.slice(url.length)) : m
+      })
+    // Nothing left but decoration (bullets, emphasis markers, emoji, punctuation)?
+    return !(hit && rest.replace(/[\s*_`~>#\-–—•:|.()[\]]|\p{Extended_Pictographic}|\uFE0F/gu, "") === "")
+  })
+  return out.join("\n").replace(/\n{3,}/g, "\n\n")
 }
 
 // ── Per-message action row (copy / edit / regenerate) ───────────────────────────
@@ -741,7 +752,9 @@ function ChatSession({ chatId }: { chatId: string }) {
             const isLastAssistant = idx === messages.length - 1 && m.role === "assistant"
             const stepsActive = isLoading && isLastAssistant
             const isEditing = editingId === m.id
-            const shown = m.role === "assistant" ? cleanAssistantText(m.content || "") : m.content
+            const shown = m.role === "assistant"
+              ? cleanAssistantText(dropCardLinkLines(m.content || "", cardUrls(invocations)))
+              : m.content
             const canRegenerate = isLastAssistant && !isLoading && messages.slice(0, idx).some((x) => x.role === "user")
             // Action rows fade in on hover/focus; always shown for the latest reply and on touch screens.
             const actionsVisibility = isLastAssistant && !isLoading
@@ -791,7 +804,12 @@ function ChatSession({ chatId }: { chatId: string }) {
                         ? "bg-gray-800 dark:bg-white text-white dark:text-black border-transparent"
                         : "bg-gray-100 dark:bg-gray-900/50 border-gray-300 dark:border-gray-800",
                     )}>
-                      <Markdown text={shown} />
+                      {m.role === "user" ? (
+                        // Your own text, exactly as typed (no markdown parsing).
+                        <p className="whitespace-pre-wrap break-words leading-relaxed">{shown}</p>
+                      ) : (
+                        <Markdown text={shown} />
+                      )}
                     </div>
                   ) : null}
                   {/* Image attachments the user sent (shown in their own bubble) */}

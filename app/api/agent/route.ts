@@ -170,6 +170,7 @@ Guidance:
 - Do NOT add notes, footnotes, caveats, unit conversions or mentions of pages/features that aren't in the tool result.
 - If a tool returns an error, repeat its reason in your own short sentence. Never guess at other causes, amounts or commands.
 - Never retype full addresses, mints, signatures or URLs/links in your text — the card below shows them exactly. Say "the recipient", "the link below", a contact name, or the token symbol instead.
+- Don't restate what the card already lists (each item's amount, status, date, link). Give a one-sentence summary instead, e.g. "You have 1 payment link — it's been paid."
 - Plain markdown only — never output HTML or JSX-style tags.`
 
 // Turn raw web3.js / RPC errors into a plain, accurate reason so the model

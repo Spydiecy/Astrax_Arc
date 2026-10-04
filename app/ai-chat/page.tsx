@@ -7,6 +7,7 @@ import {
   Bot, User, Send, Mic, MicOff, Loader2, Wallet, ArrowUpRight, Coins,
   Boxes, LineChart, Link2, Copy, Check, CalendarClock, FileText, Rocket,
   Paperclip, X, Image as ImageIcon, Code, ShieldCheck, ShieldAlert, Info, AlertTriangle,
+  Pencil, RotateCcw,
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -18,7 +19,7 @@ import TokenListCard from "@/components/ui/token-list-card"
 import CandlestickChart from "@/components/ui/candlestick-chart"
 import { AgentSteps } from "@/components/ui/agent-steps"
 
-import { getCurrentId, newChat, getMessages, saveMessages } from "@/lib/chat-history"
+import { getCurrentId, newChat, getMessages, saveMessages, chatStorageKey } from "@/lib/chat-history"
 import { explorerTx } from "@/lib/solana"
 import type { Message } from "@ai-sdk/react"
 
@@ -50,6 +51,69 @@ function Markdown({ text }: { text: string }) {
         return <p key={i}>{fmt(line, i)}</p>
       })}
     </div>
+  )
+}
+
+// The model sometimes invents UI markup such as "<ConfirmButton>" for the button
+// the app renders itself. Strip component-style (PascalCase) tags, including a
+// cut-off one at the end, and tidy a dangling colon left behind.
+function cleanAssistantText(text: string): string {
+  let t = text
+    .replace(/<\/?[A-Z][A-Za-z0-9]*(?:\s[^<>]*)?\/?>/g, "")
+    .replace(/<\/?[A-Z][A-Za-z0-9]*[^<>]*$/, "")
+    // Placeholder "buttons" on their own line, e.g. "*[Confirm Button]*" (not real links).
+    .replace(/^[ \t]*[*_]*\[[^\]\n]{1,40}\](?!\()[*_]*[ \t]*$/gm, "")
+  // Trailing separators left behind by the removals above.
+  t = t.replace(/(\s*(^|\n)\s*(-{3,}|\*{3,}|_{3,})\s*)+$/, "")
+  return t.replace(/\s+$/, "").replace(/:$/, ".")
+}
+
+// ── Per-message action row (copy / edit / regenerate) ───────────────────────────
+function MsgAction({ label, onClick, disabled, children }: { label: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      className="p-1.5 rounded-md text-gray-500 hover:text-black dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-900 disabled:opacity-40 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+    >
+      {children}
+    </button>
+  )
+}
+
+function CopyAction({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <MsgAction
+      label={copied ? "Copied" : "Copy"}
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text)
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1500)
+        } catch {
+          /* clipboard blocked (e.g. insecure context) */
+        }
+      }}
+    >
+      {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+    </MsgAction>
+  )
+}
+
+// True if any of these messages contains an action the server already executed
+// (autonomous sends/mints/creates, or a created schedule). Wallet-mode results
+// are kind "action" (not sent yet) and getTransaction lookups have no `action`.
+function ranOnChain(msgs: any[]): boolean {
+  return msgs.some((m) =>
+    (m.toolInvocations ?? []).some((inv: any) => {
+      const r = inv.state === "result" ? inv.result : null
+      if (!r || r.error) return false
+      return r.kind === "deploy" || r.kind === "schedule" || (r.kind === "transaction" && (r.action === "send" || r.action === "mint"))
+    }),
   )
 }
 
@@ -106,12 +170,20 @@ function ImageCard({ result }: { result: any }) {
           <div className="w-7 h-7 rounded-full bg-gray-800 dark:bg-white text-white dark:text-black flex items-center justify-center"><ImageIcon className="w-4 h-4" /></div>
           {result.title || "Image"}
         </div>
-        <a href={src} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline">
-          Open <ArrowUpRight className="w-3 h-3" />
-        </a>
+        {src && (
+          <a href={src} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline">
+            Open <ArrowUpRight className="w-3 h-3" />
+          </a>
+        )}
       </div>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={src} alt={result.title || "generated image"} className="w-full rounded-md border border-gray-200 dark:border-gray-800" />
+      {src ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={src} alt={result.title || "generated image"} className="w-full rounded-md border border-gray-200 dark:border-gray-800" />
+      ) : (
+        <p className="text-xs text-gray-500 rounded-md border border-dashed border-gray-300 dark:border-gray-700 p-3">
+          This image was too large to keep in saved chat history. Ask again to regenerate it.
+        </p>
+      )}
       {result.mermaid && (
         <div className="mt-2">
           <button onClick={() => setShowSource((s) => !s)} className="text-xs text-gray-500 hover:text-black dark:hover:text-white inline-flex items-center gap-1">
@@ -127,7 +199,7 @@ function ImageCard({ result }: { result: any }) {
 }
 
 // ── Render a tool result into a card ────────────────────────────────────────────
-function ToolCard({ result }: { result: any }) {
+function ToolCard({ result, callId }: { result: any; callId?: string }) {
   if (!result || result.error) {
     return result?.error ? (
       <div className="mt-3 w-full max-w-xl rounded-lg border border-red-300 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 p-3 text-sm text-red-700 dark:text-red-300">
@@ -138,7 +210,7 @@ function ToolCard({ result }: { result: any }) {
 
   // Wallet-mode prepared transaction → render a one-click confirm button.
   if (result.kind === "action") {
-    return <TxActionButton action={result as PendingAction} />
+    return <TxActionButton id={callId} action={result as PendingAction} />
   }
 
   switch (result.kind) {
@@ -459,10 +531,13 @@ function ChatSession({ chatId }: { chatId: string }) {
   const initialMessages: Message[] =
     stored.length > 0 ? (stored as unknown as Message[]) : [{ id: "welcome", role: "assistant", content: WELCOME }]
 
-  const { messages, input, handleInputChange, handleSubmit, status, setInput, append } = useChat({
+  const { messages, input, handleInputChange, handleSubmit, status, setInput, append, setMessages, reload, error } = useChat({
     api: "/api/agent",
     id: chatId,
     initialMessages,
+    // On a failed request (rate limit, server restart…) keep the user's message
+    // instead of silently rolling the chat back; a Retry button is shown.
+    keepLastMessageOnError: true,
     experimental_prepareRequestBody: ({ messages }) => ({
       // Keep the model text-only (strip image attachments used purely for display).
       messages: messages.map((m: any) => ({ id: m.id, role: m.role, content: m.content, toolInvocations: m.toolInvocations })),
@@ -473,6 +548,37 @@ function ChatSession({ chatId }: { chatId: string }) {
   })
 
   const isLoading = status === "submitted" || status === "streaming"
+
+  // ── Edit / regenerate ──────────────────────────────────────────────────────
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editText, setEditText] = useState("")
+
+  // Re-running a turn that already moved funds autonomously would do it again.
+  const okToRerun = (dropped: any[]) =>
+    !ranOnChain(dropped) ||
+    window.confirm("This conversation already ran an on-chain action from here on. Re-running may execute it again (e.g. send another payment). Continue?")
+
+  const submitEdit = (idx: number) => {
+    const text = editText.trim()
+    if (!text || isLoading) return
+    const original = messages[idx] as any
+    if (text === original.content.trim()) {
+      setEditingId(null)
+      return
+    }
+    if (!okToRerun(messages.slice(idx))) return
+    setEditingId(null)
+    // Drop this message and everything after it, then send the edited version.
+    setMessages(messages.slice(0, idx))
+    append({ role: "user", content: text, experimental_attachments: original.experimental_attachments })
+  }
+
+  const regenerate = () => {
+    if (isLoading) return
+    const last = messages[messages.length - 1]
+    if (last?.role === "assistant" && !okToRerun([last])) return
+    reload()
+  }
 
   // Show the tutorial once per browser, and when the header button asks for it.
   useEffect(() => {
@@ -489,10 +595,38 @@ function ChatSession({ chatId }: { chatId: string }) {
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }) }, [messages])
 
-  // Persist the conversation to the browser once a turn settles.
+  // Persist the conversation: immediately when a turn settles, and at most once a
+  // second while a reply streams, so a reload/refresh mid-turn doesn't lose it.
+  const latestRef = useRef(messages)
+  latestRef.current = messages
   useEffect(() => {
-    if (status === "ready" || status === "error") saveMessages(chatId, messages as any)
+    if (status === "ready" || status === "error") {
+      saveMessages(chatId, messages as any)
+      return
+    }
+    const t = setTimeout(() => saveMessages(chatId, latestRef.current as any), 1000)
+    return () => clearTimeout(t)
   }, [status, messages, chatId])
+  useEffect(() => {
+    const flush = () => saveMessages(chatId, latestRef.current as any)
+    window.addEventListener("pagehide", flush)
+    return () => window.removeEventListener("pagehide", flush)
+  }, [chatId])
+
+  // Another tab updated this chat → adopt its version (when idle), so a stale
+  // tab can't overwrite newer history the next time it saves.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== chatStorageKey(chatId) || !e.newValue || isLoading) return
+      try {
+        setMessages(JSON.parse(e.newValue))
+      } catch {
+        /* ignore malformed */
+      }
+    }
+    window.addEventListener("storage", onStorage)
+    return () => window.removeEventListener("storage", onStorage)
+  }, [chatId, isLoading, setMessages])
 
   const toggleRecording = () => {
     const SR = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition
@@ -559,8 +693,15 @@ function ChatSession({ chatId }: { chatId: string }) {
             const invocations = (m as any).toolInvocations ?? []
             const isLastAssistant = idx === messages.length - 1 && m.role === "assistant"
             const stepsActive = isLoading && isLastAssistant
+            const isEditing = editingId === m.id
+            const shown = m.role === "assistant" ? cleanAssistantText(m.content || "") : m.content
+            const canRegenerate = isLastAssistant && !isLoading && messages.slice(0, idx).some((x) => x.role === "user")
+            // Action rows fade in on hover/focus; always shown for the latest reply and on touch screens.
+            const actionsVisibility = isLastAssistant && !isLoading
+              ? "opacity-100"
+              : "opacity-0 group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100"
             return (
-              <div key={m.id} className={cn("flex items-start gap-3", m.role === "user" ? "flex-row-reverse" : "")}>
+              <div key={m.id} className={cn("group flex items-start gap-3", m.role === "user" ? "flex-row-reverse" : "")}>
                 <div className={cn(
                   "w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0",
                   m.role === "assistant" ? "bg-gray-200 dark:bg-gray-800" : "bg-gray-800 dark:bg-white text-white dark:text-black",
@@ -569,16 +710,43 @@ function ChatSession({ chatId }: { chatId: string }) {
                 </div>
                 <div className={cn("flex flex-col", m.role === "user" ? "items-end" : "items-start", "max-w-[85%]")}>
                   {m.role === "assistant" && <AgentSteps invocations={invocations} active={stepsActive} />}
-                  {m.content && (
+                  {isEditing ? (
+                    <form
+                      onSubmit={(e) => { e.preventDefault(); submitEdit(idx) }}
+                      className="w-[min(36rem,80vw)] rounded-lg border border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-900 p-2"
+                    >
+                      <label htmlFor={`edit-${m.id}`} className="sr-only">Edit message</label>
+                      <textarea
+                        id={`edit-${m.id}`}
+                        autoFocus
+                        value={editText}
+                        onChange={(e) => setEditText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitEdit(idx) }
+                          if (e.key === "Escape") setEditingId(null)
+                        }}
+                        rows={Math.min(8, Math.max(2, editText.split("\n").length))}
+                        className="w-full resize-y bg-transparent text-sm p-1.5 focus:outline-none"
+                      />
+                      <div className="flex justify-end gap-2 mt-1">
+                        <button type="button" onClick={() => setEditingId(null)} className="px-3 py-1.5 text-xs rounded-md border border-gray-300 dark:border-gray-700 hover:bg-gray-200 dark:hover:bg-gray-800">
+                          Cancel
+                        </button>
+                        <button type="submit" disabled={!editText.trim() || isLoading} className="px-3 py-1.5 text-xs rounded-md bg-gray-900 dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50">
+                          Send
+                        </button>
+                      </div>
+                    </form>
+                  ) : shown ? (
                     <div className={cn(
                       "rounded-lg p-3.5 border text-sm",
                       m.role === "user"
                         ? "bg-gray-800 dark:bg-white text-white dark:text-black border-transparent"
                         : "bg-gray-100 dark:bg-gray-900/50 border-gray-300 dark:border-gray-800",
                     )}>
-                      <Markdown text={m.content} />
+                      <Markdown text={shown} />
                     </div>
-                  )}
+                  ) : null}
                   {/* Image attachments the user sent (shown in their own bubble) */}
                   {(m as any).experimental_attachments?.length > 0 && (
                     <div className={cn("mt-2 flex flex-wrap gap-2", m.role === "user" ? "justify-end" : "")}>
@@ -591,12 +759,40 @@ function ChatSession({ chatId }: { chatId: string }) {
                     </div>
                   )}
                   {invocations.map((inv: any) =>
-                    inv.state === "result" ? <ToolCard key={inv.toolCallId} result={inv.result} /> : null,
+                    inv.state === "result" ? <ToolCard key={inv.toolCallId} callId={inv.toolCallId} result={inv.result} /> : null,
+                  )}
+                  {!isEditing && !stepsActive && (shown || canRegenerate) && (
+                    <div className={cn("mt-1 flex items-center gap-0.5 transition-opacity", actionsVisibility)}>
+                      {shown && <CopyAction text={shown} />}
+                      {m.role === "user" && (
+                        <MsgAction label="Edit message" disabled={isLoading} onClick={() => { setEditingId(m.id); setEditText(m.content) }}>
+                          <Pencil className="w-3.5 h-3.5" />
+                        </MsgAction>
+                      )}
+                      {canRegenerate && (
+                        <MsgAction label="Regenerate response" onClick={regenerate}>
+                          <RotateCcw className="w-3.5 h-3.5" />
+                        </MsgAction>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
             )
           })}
+
+          {/* Failed request: the message is kept; offer a retry instead of losing it. */}
+          {status === "error" && (
+            <div className="flex items-start gap-3" role="alert">
+              <div className="w-8 h-8 flex-shrink-0" />
+              <div className="flex items-center gap-3 rounded-lg border border-red-300 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-sm text-red-700 dark:text-red-300">
+                <span>Astrax couldn&apos;t reply{error?.message ? `: ${error.message.slice(0, 120)}` : "."}</span>
+                <button type="button" onClick={() => reload()} className="inline-flex items-center gap-1 font-medium underline underline-offset-2">
+                  <RotateCcw className="w-3.5 h-3.5" /> Retry
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Starter suggestions (only on a fresh conversation) */}
           {messages.length <= 1 && !isLoading && (

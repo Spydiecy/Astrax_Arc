@@ -160,11 +160,51 @@ Guidance:
 - "save alice as <address>" → saveContact ; "who is alice" → resolveContact
 - "store asset <link>" → storeAsset ; "my assets" → listAssets
 
-## Signing modes
-There are two modes. In **wallet mode**, write tools return a prepared transaction and the user confirms it in their wallet via a button in the chat — tell them to click the button. In **autonomous mode**, write tools sign server-side with the user's key and return the transaction signature directly. If a write tool reports no signer is available, tell the user to either connect their wallet (wallet mode) or add a secret key in the sidebar **Signing** panel (autonomous mode).
-
 ## Formatting
-- **bold** for key terms, backticks for addresses/signatures. Keep it short. Never invent signatures, addresses, or balances — only report tool output.`
+- **bold** for key terms, backticks for addresses/signatures. Keep it to one or two sentences. Never invent signatures, addresses, or balances — only report tool output.
+- Do NOT add notes, footnotes, caveats, unit conversions or mentions of pages/features that aren't in the tool result.
+- If a tool returns an error, repeat its reason in your own short sentence. Never guess at other causes, amounts or commands.
+- Never retype full addresses, mints or signatures in your text — the card below shows them exactly. Say "the recipient", a contact name, or the token symbol instead.
+- Plain markdown only — never output HTML or JSX-style tags.`
+
+// Turn raw web3.js / RPC errors into a plain, accurate reason so the model
+// doesn't have to guess (it otherwise invents causes).
+function friendlyError(e: any): string {
+  const msg = String(e?.message || e || "unknown error")
+  const logs = Array.isArray(e?.logs) ? e.logs.join(" ") : ""
+  const all = `${msg} ${logs}`
+  if (/no record of a prior credit|AccountNotFound/i.test(all))
+    return `Your signing wallet has no SOL on ${CLUSTER} yet, so it can't pay the amount or the network fee. Fund it first${CLUSTER === "devnet" ? " (for example from faucet.solana.com)" : ""}.`
+  if (/insufficient lamports|insufficient funds for rent|InsufficientFundsForRent/i.test(all))
+    return "Not enough SOL in your signing wallet to cover the amount plus fees."
+  if (/insufficient funds/i.test(all) || /custom program error: 0x1\b/i.test(all))
+    return "Not enough tokens in your signing wallet for this transfer."
+  if (/owner does not match|custom program error: 0x4\b/i.test(all))
+    return "Your wallet isn't the authority for this token, so it can't do that."
+  if (/Blockhash not found|block height exceeded|expired/i.test(all))
+    return "The network didn't confirm it in time. Nothing was sent; try again."
+  if (/429|Too Many Requests/i.test(all)) return "The Solana RPC is rate-limiting requests right now. Try again in a moment."
+  return msg.slice(0, 160)
+}
+
+// Only the ACTIVE signing mode is described, so the model never hedges between modes.
+function signingSection(mode: "auto" | "wallet", hasSigner: boolean): string {
+  if (mode === "wallet") {
+    return `## Signing (current mode: WALLET)
+The user approves every transaction in their own wallet. Write tools (sendPayment, deployToken, deployNFT, mintTokens) only PREPARE a transaction; the chat then shows a confirm button under your reply.
+- ONLY when one of those write tools just returned a prepared transaction: say what is ready (amount, recipient, token) and tell them to click the button below to confirm in their wallet.
+- For every other reply (balances, prices, blocks, explain, contacts, links, errors…) never mention buttons, confirming, wallets or connecting.
+- The app renders the button itself. Never write a button, tag, placeholder or any markup for it (no "<ConfirmButton>", no "[Confirm]").
+- Nothing is on-chain yet: never say it was sent, created or minted.
+- Do not mention autonomous mode, secret keys or signing setup unless a tool returned an error about it.
+${hasSigner ? "" : "- No wallet is connected. Only if a write tool returns a no-wallet error, tell them to connect their wallet in the top bar."}`
+  }
+  return `## Signing (current mode: AUTONOMOUS)
+Astrax signs and submits transactions immediately with the user's key. There is NO confirm button and no wallet popup.
+- After a write tool succeeds, report that it was done and give the signature from the tool result.
+- Never tell the user to click a button or confirm in a wallet. Do not mention wallet mode.
+${hasSigner ? "" : "- No secret key is loaded. Only if a write tool returns a no-key error, tell them to paste one in the sidebar **Signing** panel."}`
+}
 
 export async function POST(req: Request) {
   const body = await req.json()
@@ -217,7 +257,7 @@ export async function POST(req: Request) {
 
   const result = await streamText({
     model,
-    system: SYSTEM_PROMPT,
+    system: `${SYSTEM_PROMPT}\n\n${signingSection(signingMode, Boolean(ownerAddress))}`,
     messages,
     maxSteps: 6,
     tools: {
@@ -498,7 +538,7 @@ export async function POST(req: Request) {
             const sig = await sendAndConfirmTransaction(connection, tx, [wallet.keypair])
             return { kind: "transaction", status: "Submitted", action: "send", hash: sig, from: owner.toBase58(), to: recipient, value: `${amount} ${symbol}`, explorerUrl: explorerTx(sig) }
           } catch (e: any) {
-            return { error: `Transaction failed: ${(e?.message || "unknown error").slice(0, 160)}` }
+            return { error: `Payment not sent: ${friendlyError(e)}` }
           }
         },
       }),
@@ -525,7 +565,7 @@ export async function POST(req: Request) {
             const sig = await sendAndConfirmTransaction(connection, tx, [wallet.keypair, mint])
             return { kind: "deploy", what: "token", name, symbol, supply, contractAddress: mint.publicKey.toBase58(), hash: sig, explorerUrl: explorerTx(sig) }
           } catch (e: any) {
-            return { error: `Create failed: ${(e?.message || "unknown error").slice(0, 160)}` }
+            return { error: `Create failed: ${friendlyError(e)}` }
           }
         },
       }),
@@ -567,7 +607,7 @@ export async function POST(req: Request) {
             const sig = await sendAndConfirmTransaction(connection, tx, [wallet.keypair, mint])
             return { kind: "deploy", what: "nft", name, symbol, image: imageUsed, metadataUri, contractAddress: mint.publicKey.toBase58(), hash: sig, explorerUrl: explorerTx(sig) }
           } catch (e: any) {
-            return { error: `Create failed: ${(e?.message || "unknown error").slice(0, 160)}` }
+            return { error: `Create failed: ${friendlyError(e)}` }
           }
         },
       }),
@@ -602,7 +642,7 @@ export async function POST(req: Request) {
             const sig = await sendAndConfirmTransaction(connection, tx, [wallet.keypair])
             return { kind: "transaction", status: "Submitted", action: "mint", hash: sig, to: recipient, value: `${amt} token(s)`, explorerUrl: explorerTx(sig) }
           } catch (e: any) {
-            return { error: `Mint failed: ${(e?.message || "unknown error").slice(0, 160)}` }
+            return { error: `Mint failed: ${friendlyError(e)}` }
           }
         },
       }),

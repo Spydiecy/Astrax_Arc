@@ -1,6 +1,7 @@
 "use client"
 
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
+import { useCredentials } from "@/contexts/CredentialsContext"
 import { useConnection, useWallet } from "@solana/wallet-adapter-react"
 import type { Keypair, Transaction } from "@solana/web3.js"
 import { Loader2, Zap, CheckCircle2, ArrowUpRight } from "lucide-react"
@@ -29,13 +30,33 @@ export interface PendingAction {
 
 const short = (a?: string) => (a && a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a || "")
 
-export function TxActionButton({ action, onDone }: { action: PendingAction; onDone?: (sig: string) => void }) {
+// Confirmed actions are remembered per tool call, so a reloaded chat shows
+// "Confirmed" instead of offering to pay again.
+const doneKey = (id: string) => `astrax_tx_done:${id}`
+interface DoneRecord { signature: string; mint?: string }
+
+export function TxActionButton({ id, action, onDone }: { id?: string; action: PendingAction; onDone?: (sig: string) => void }) {
   const { connection } = useConnection()
   const { publicKey, sendTransaction, connected } = useWallet()
+  const { signingMode } = useCredentials()
   const [signature, setSignature] = useState<string>()
   const [createdMint, setCreatedMint] = useState<string>()
   const [phase, setPhase] = useState<"idle" | "wallet" | "mining" | "done" | "error">("idle")
   const [errMsg, setErrMsg] = useState("")
+
+  useEffect(() => {
+    if (!id) return
+    try {
+      const rec = JSON.parse(localStorage.getItem(doneKey(id)) || "null") as DoneRecord | null
+      if (rec?.signature) {
+        setSignature(rec.signature)
+        setCreatedMint(rec.mint)
+        setPhase("done")
+      }
+    } catch {
+      /* ignore corrupt entries */
+    }
+  }, [id])
 
   const execute = useCallback(async () => {
     if (!connected || !publicKey) {
@@ -47,6 +68,7 @@ export function TxActionButton({ action, onDone }: { action: PendingAction; onDo
     setErrMsg("")
     try {
       let tx: Transaction
+      let mintAddr: string | undefined
       const signers: Keypair[] = []
       if (action.action === "deployToken" || action.action === "deployNFT") {
         const built = await buildCreateToken(connection, publicKey, {
@@ -59,7 +81,8 @@ export function TxActionButton({ action, onDone }: { action: PendingAction; onDo
         })
         tx = built.tx
         signers.push(built.mint)
-        setCreatedMint(built.mint.publicKey.toBase58())
+        mintAddr = built.mint.publicKey.toBase58()
+        setCreatedMint(mintAddr)
       } else {
         if (!action.txBase64) throw new Error("Missing prepared transaction")
         tx = deserializeTx(action.txBase64)
@@ -76,13 +99,14 @@ export function TxActionButton({ action, onDone }: { action: PendingAction; onDo
       setPhase("mining")
       const res = await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed")
       if (res.value.err) throw new Error(`Transaction failed on-chain: ${JSON.stringify(res.value.err)}`)
+      if (id) localStorage.setItem(doneKey(id), JSON.stringify({ signature: sig, mint: mintAddr } satisfies DoneRecord))
       setPhase("done")
       onDone?.(sig)
     } catch (e: any) {
       setErrMsg((e?.message || "Transaction rejected").slice(0, 160))
       setPhase("error")
     }
-  }, [action, connection, publicKey, sendTransaction, connected, onDone])
+  }, [id, action, connection, publicKey, sendTransaction, connected, onDone])
 
   if (phase === "done") {
     return (
@@ -111,12 +135,29 @@ export function TxActionButton({ action, onDone }: { action: PendingAction; onDo
     )
   }
 
+  // Autonomous mode signs server-side, so wallet confirm buttons don't apply.
+  // (Only reachable for an action prepared earlier, before switching modes.)
+  if (signingMode === "auto" && phase === "idle") {
+    return (
+      <div className="mt-3 w-full max-w-xl rounded-lg border border-gray-200 dark:border-gray-800 px-3 py-2.5 text-xs text-gray-500 dark:text-gray-400">
+        {action.label} — prepared in wallet mode and not sent. Switch to <strong>Wallet</strong> signing to confirm it, or ask again to run it autonomously.
+      </div>
+    )
+  }
+
   const busy = phase === "wallet" || phase === "mining"
   return (
+    <div className="w-full max-w-xl">
+    {action.to && (
+      <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-800 px-3 py-2 text-xs">
+        <div className="text-gray-500 dark:text-gray-400">{action.action === "mintTokens" ? "Mint to" : "Recipient"}</div>
+        <div className="font-mono break-all mt-0.5">{action.to}</div>
+      </div>
+    )}
     <button
       onClick={execute}
       disabled={busy}
-      className="mt-3 w-full max-w-xl flex items-center justify-center gap-2 rounded-lg bg-gray-900 dark:bg-white text-white dark:text-black px-4 py-3 text-sm font-semibold hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-70 transition-colors"
+      className="mt-2 w-full flex items-center justify-center gap-2 rounded-lg bg-gray-900 dark:bg-white text-white dark:text-black px-4 py-3 text-sm font-semibold hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-70 transition-colors"
     >
       {phase === "mining" ? (
         <><Loader2 className="w-4 h-4 animate-spin" /> Confirming on-chain…</>
@@ -126,5 +167,6 @@ export function TxActionButton({ action, onDone }: { action: PendingAction; onDo
         <><Zap className="w-4 h-4" /> {action.label}</>
       )}
     </button>
+    </div>
   )
 }

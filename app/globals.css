@@ -172,6 +172,16 @@
   animation: marquee var(--duration) linear infinite;
 }
 
+/* Seamless loop: the track is two identical halves; slide exactly one half. */
+@keyframes marquee-loop {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(-50%, 0, 0); }
+}
+.animate-marquee-loop {
+  animation: marquee-loop 60s linear infinite;
+  will-change: transform;
+}
+
 /* ── Solana wallet-adapter modal, restyled to match the app ─────────────────────
    Kept unlayered on purpose: the adapter's own CSS is unlayered, so layered
    (Tailwind) rules would lose to it. Colors follow light/dark via `.dark`. */

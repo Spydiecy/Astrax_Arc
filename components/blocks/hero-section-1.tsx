@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { AnimatedGroup } from '@/components/ui/animated-group'
 import { cn } from '@/lib/utils'
 import { TechStack } from '@/components/blocks/tech-stack'
+import { PromptMarquee } from '@/components/blocks/prompt-marquee'
 
 const FEATURES: { icon: LucideIcon; title: string; body: string }[] = [
     { icon: Send, title: 'Chat to act on-chain', body: 'Send SOL or any SPL token, and create tokens and 1-of-1 NFTs with on-chain names and metadata. Pay saved contacts by name.' },
@@ -338,31 +339,7 @@ export function HeroSection() {
                             </p>
                         </div>
 
-                        <div className="relative flex w-full flex-col items-center justify-center overflow-hidden">
-                            {[EXAMPLES.slice(0, 5), EXAMPLES.slice(5)].map((row, r) => (
-                                <div key={r} className="w-full overflow-hidden py-2">
-                                    <div className="flex [--gap:1rem] [gap:var(--gap)] [--duration:45s]" style={r ? { flexDirection: "row-reverse" } : undefined}>
-                                        {[0, 1].map((copy) => (
-                                            <ul
-                                                key={copy}
-                                                aria-hidden={copy === 1 || undefined}
-                                                className="flex shrink-0 justify-around [gap:var(--gap)] animate-marquee flex-row hover:[animation-play-state:paused] motion-reduce:animate-none"
-                                                style={r ? { animationDirection: "reverse" } : undefined}
-                                            >
-                                                {row.map(({ icon: Icon, text }) => (
-                                                    <li key={text} className="flex w-72 items-start gap-3 rounded-xl border p-4 text-left sm:w-80">
-                                                        <Icon className="mt-0.5 size-4 flex-shrink-0 text-muted-foreground" aria-hidden />
-                                                        <span className="font-mono text-sm leading-relaxed">“{text}”</span>
-                                                    </li>
-                                                ))}
-                                            </ul>
-                                        ))}
-                                    </div>
-                                </div>
-                            ))}
-                            <div className="pointer-events-none absolute inset-y-0 left-0 hidden w-1/3 bg-gradient-to-r from-background sm:block" />
-                            <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-1/3 bg-gradient-to-l from-background sm:block" />
-                        </div>
+                        <PromptMarquee prompts={EXAMPLES} />
 
                         <Button asChild size="lg" className="rounded-xl px-5">
                             <Link href="/ai-chat">Try it now</Link>

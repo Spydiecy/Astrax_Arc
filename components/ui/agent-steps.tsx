@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils"
 const LABELS: Record<string, string> = {
   resolveContact: "Resolving contact",
   saveContact: "Saving contact",
+  deleteContact: "Removing contact",
   listContacts: "Loading contacts",
   getBalance: "Checking balance",
   getTokenBalance: "Checking token balance",

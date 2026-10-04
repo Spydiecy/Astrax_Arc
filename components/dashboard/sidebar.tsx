@@ -5,12 +5,13 @@ import { useState, useEffect, useCallback } from "react"
 import { useTheme } from "next-themes"
 import {
   Plus, FileText, ArrowLeft, ChevronLeft, ChevronDown, Key, Wallet, Zap, Eye, EyeOff, Check,
-  MessageSquare, Trash2, CalendarClock, Link2, Pencil, Lock,
+  MessageSquare, Trash2, CalendarClock, Link2, Pencil, Lock, BookUser,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useCredentials } from "@/contexts/CredentialsContext"
 import { ScheduledModal } from "@/components/scheduled-modal"
 import { PaymentLinksModal } from "@/components/payment-links-modal"
+import { ContactsModal } from "@/components/contacts-modal"
 import { getChats, getCurrentId, newChat, openChat, deleteChat, renameChat, MAX_TITLE, type ChatMeta } from "@/lib/chat-history"
 
 interface DashboardSidebarProps {
@@ -30,6 +31,7 @@ export function DashboardSidebar({ open, setOpen }: DashboardSidebarProps) {
   const [currentId, setCurrentId] = useState<string | null>(null)
   const [scheduledOpen, setScheduledOpen] = useState(false)
   const [linksOpen, setLinksOpen] = useState(false)
+  const [contactsOpen, setContactsOpen] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameText, setRenameText] = useState("")
 
@@ -117,6 +119,7 @@ export function DashboardSidebar({ open, setOpen }: DashboardSidebarProps) {
     <>
       <ScheduledModal isOpen={scheduledOpen} onClose={() => setScheduledOpen(false)} />
       <PaymentLinksModal isOpen={linksOpen} onClose={() => setLinksOpen(false)} />
+      <ContactsModal isOpen={contactsOpen} onClose={() => setContactsOpen(false)} />
       <div
         className={cn(
           "fixed left-0 top-0 h-full border-r flex flex-col transition-all duration-300 z-30",
@@ -237,6 +240,10 @@ export function DashboardSidebar({ open, setOpen }: DashboardSidebarProps) {
           <button onClick={() => setLinksOpen(true)} className={navBtn(false)}>
             <Link2 className="h-4 w-4 flex-shrink-0" />
             {open && <span className="ml-2">Payment links</span>}
+          </button>
+          <button onClick={() => setContactsOpen(true)} className={navBtn(false)}>
+            <BookUser className="h-4 w-4 flex-shrink-0" />
+            {open && <span className="ml-2">Contacts</span>}
           </button>
           <a href="https://github.com/Spydiecy/Astrax/blob/main/README.md" target="_blank" rel="noopener noreferrer" className={navBtn(false)}>
             <FileText className="h-4 w-4 flex-shrink-0" />

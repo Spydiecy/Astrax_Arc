@@ -432,6 +432,12 @@ function ToolCard({ result, callId }: { result: any; callId?: string }) {
           <Field label="Address">{short(result.address)}</Field>
         </CardShell>
       )
+    case "contactDeleted":
+      return (
+        <CardShell icon={<User className="w-4 h-4" />} title="Contact Removed">
+          <Field label="Name">{result.name}</Field>
+        </CardShell>
+      )
     case "contactList":
       return (
         <CardShell icon={<User className="w-4 h-4" />} title="Contacts">

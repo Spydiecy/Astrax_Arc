@@ -45,13 +45,13 @@ that turns chat into on-chain actions.
   - `mintTokens`.
   - `scheduleTransfer` / `listSchedules` / `cancelSchedule`.
   - `createPaymentLink` / `listPaymentLinks`.
-- **Utility:** address book (`saveContact`, `resolveContact`, `listContacts`), assets
-  (`storeAsset`, `listAssets`), `generateDiagram` (Mermaid), `generateImage` (Gemini,
+- **Utility:** contacts (`saveContact`, `resolveContact`, `listContacts`,
+  `deleteContact`), assets (`storeAsset`, `listAssets`), `generateDiagram` (Mermaid), `generateImage` (Gemini,
   optional), and `swap` (a stub until a DEX is configured via `SOLANA_DEX`).
 - Not supported: deploying arbitrary on-chain programs from chat.
 
 ## Payment links
-- Created in chat ("payment link for 0.5 SOL for logo design"). Saved in SQLite, shared
+- Created in chat ("payment link for 0.5 SOL for logo design"). Saved in the database, shared
   as `/pay/<id>` on whatever domain the app is opened on.
 - **Pay page:** shows the amount, description, a Solana Pay QR code and a Pay button. It
   refreshes every 5 seconds while open.
@@ -68,15 +68,22 @@ that turns chat into on-chain actions.
 
 ## Scheduled payments
 - One-time or recurring ("pay alice 1 SOL every week, 4 times"), autonomous mode only.
-- The key is AES-256-GCM encrypted (`SCHEDULER_ENC_KEY`) in SQLite, used by
+- The key is AES-256-GCM encrypted (`SCHEDULER_ENC_KEY`) in the database, used by
   `/api/cron/execute`, and wiped once the job finishes or is cancelled.
 - In dev the open app triggers the job every minute. In production, Vercel Cron calls it
   with `CRON_SECRET`.
 - **Sidebar "Scheduled" tab:** list and cancel (owner only).
 
+## Contacts
+- Each wallet has its own address book. Save from chat ("save alice as <address>") or in
+  the sidebar **Contacts** tab (add, edit, delete, copy, search, open in explorer).
+- Then just "send 1 SOL to alice" or "schedule 2 SOL to alice every week". Names only
+  ever resolve from your own contacts.
+- Names are case-insensitive; saving an existing name updates its address.
+
 ## Proving ownership
-- Viewing or cancelling payment links and schedules (and listing stored assets) requires
-  proving you control the address, by signing a free sign-in message:
+- Viewing or changing contacts, payment links and schedules (and listing stored assets)
+  requires proving you control the address, by signing a free sign-in message:
   - **Wallet mode:** the wallet signs it (one popup, no transaction).
   - **Autonomous mode:** the loaded key signs it silently.
 - The server verifies the signature and sets an HttpOnly session cookie for 7 days
@@ -85,8 +92,9 @@ that turns chat into on-chain actions.
 - Pay pages stay public, since payers need them.
 
 ## Storage and deployment
-- **Browser:** chats.
-- **`.data/astrax.db` (SQLite):** schedules and payment links.
-- **`.data/astrax.json`:** address book and assets.
-- The `.data` files need a persistent disk. On Vercel's read-only, temporary function
-  filesystem they must move to a hosted database (see the README).
+- **Browser:** chats only.
+- **Database (libSQL):** contacts, schedules, payment links and assets, each row tied to
+  its wallet. It also holds used sign-in nonces and upload rate limits, so those hold
+  across servers.
+- **Where:** locally a file at `.data/astrax.db`; on Vercel a hosted Turso database via
+  `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` (free tier is enough). See the README.

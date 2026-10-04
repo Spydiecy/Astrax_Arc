@@ -30,6 +30,7 @@ sidebar **Signing** panel: connect a wallet, or paste a devnet secret key.
 | `ASTRAX_MODEL` | Optional model override. |
 | `NEXT_PUBLIC_CLUSTER` | `devnet` (default), `testnet` or `mainnet-beta`. |
 | `SOLANA_RPC_URL` / `NEXT_PUBLIC_RPC_URL` | Optional RPC override (server / browser). |
+| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Hosted database. Leave empty locally (a file is used). **Required on Vercel.** |
 | `AUTH_SECRET` | Signs wallet-ownership sessions. **Required in production.** |
 | `SCHEDULER_ENC_KEY` | Encrypts keys stored for scheduled payments. |
 | `CRON_SECRET` | Protects `/api/cron/execute` in production. |
@@ -58,18 +59,36 @@ Cron    ──▶ /api/cron/execute  → runs due scheduled payments
 **Where data lives:**
 - **Chats:** only in the user's browser (localStorage), for privacy. Clearing site data
   or a private window deletes them, and they don't sync across devices.
-- **Scheduled payments and payment links:** SQLite at `.data/astrax.db`.
-- **Address book and stored assets:** a JSON file at `.data/astrax.json`.
+- **Contacts, scheduled payments, payment links, stored assets:** one SQLite-compatible
+  database ([libSQL](https://github.com/tursodatabase/libsql)), kept separately for each
+  wallet. Locally it's a file at `.data/astrax.db`; when deployed it's a hosted
+  [Turso](https://turso.tech) database. The same code runs in both places.
 
 ---
 
 ## Deploying
 
-The `.data/` storage is a local file, which works for `npm run dev`, `npm start` or any
-server with a persistent disk. **It does not work on Vercel as-is.** Vercel functions
-have a read-only, temporary filesystem, so scheduled payments, payment links and the
-address book need a hosted database there. Vercel's Hobby plan also only runs cron
-jobs once a day, while `vercel.json` asks for every minute.
+**Locally or on a server with a disk** (`npm start`, Railway, Fly.io, a VPS): nothing to
+set up. The database file is created on first use.
+
+**On Vercel**, functions have a read-only, temporary filesystem, so use a hosted database.
+Turso's free tier is enough:
+
+```bash
+turso db create astrax
+turso db show astrax --url        # → TURSO_DATABASE_URL
+turso db tokens create astrax     # → TURSO_AUTH_TOKEN
+```
+
+Add both, plus `AUTH_SECRET`, `SCHEDULER_ENC_KEY` and `CRON_SECRET`, to the Vercel
+project's environment variables. Tables are created automatically on first request.
+Without a database URL the app refuses to start its database on Vercel, rather than
+losing data.
+
+**Cron:** Vercel's Hobby plan only allows cron jobs once a day, while `vercel.json`
+asks for every minute (Pro plan). On Hobby, remove the `crons` entry and call
+`GET /api/cron/execute` every minute from an external scheduler (e.g. cron-job.org or
+GitHub Actions), sending the header `Authorization: Bearer <CRON_SECRET>`.
 
 ---
 
@@ -79,12 +98,11 @@ jobs once a day, while `vercel.json` asks for every minute.
   is sent in the request body (never the prompt) and never logged. For scheduled
   payments it's stored AES-256-GCM encrypted and wiped when the job finishes. Intended
   for devnet; on mainnet use wallet signing.
-- **Owner-only data:** payment links, schedules and stored assets are only shown to a
-  browser that proved it controls the address, via a free signed message (wallet mode)
-  or the loaded key (autonomous). Sessions are HttpOnly cookies.
+- **Owner-only data:** contacts, payment links, schedules and stored assets belong to
+  one wallet. They're only shown to a browser that proved it controls that address, via
+  a free signed message (wallet mode) or the loaded key (autonomous). Sessions are
+  HttpOnly cookies. Sending to a contact name also only looks in your own contacts.
 - **Payment links** can only be paid by someone other than their creator.
-- **`/api/upload` has no login.** It's rate-limited (20 uploads/min per IP), capped at
-  10 MB and restricted by file type.
-- **The address book is shared by everyone** using the same server. It isn't
-  per-wallet.
+- **`/api/upload` has no login.** It's rate-limited (20 uploads/min per IP, tracked in
+  the database so it holds across servers), capped at 10 MB and restricted by file type.
 - No secrets are hardcoded; everything comes from the environment.

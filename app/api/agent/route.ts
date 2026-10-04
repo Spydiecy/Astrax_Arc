@@ -30,6 +30,7 @@ import { ASTRAX_NFT_ABI, ASTRAX_NFT_BYTECODE } from "@/lib/erc721"
 import { compileSolidity } from "@/lib/solc"
 import { spotPriceUSD, dailyCandles, indicativeCandles } from "@/lib/prices"
 import { uploadJSONToIPFS, isPinataConfigured } from "@/lib/pinata"
+import { explainTarget } from "@/lib/explain"
 import { saveAddress, resolveName, listAddresses, addAsset, listAssets } from "@/lib/store"
 import { insertSchedule, listSchedulesByOwner, cancelSchedule as dbCancelSchedule } from "@/lib/db"
 import { encryptSecret } from "@/lib/crypto"
@@ -154,6 +155,7 @@ Guidance:
 - "send 1 ${NATIVE_SYMBOL} to 0x../alice" → sendPayment (token defaults to native ${NATIVE_SYMBOL})
 - "look up tx 0x.." → getTransaction ; "latest blocks" → getLatestBlocks ; "block 123" → getBlock
 - "list tokens" → listTokens ; "price/market" → getMarketData ; "activity for 0x.." → getAddressActivity
+- "what is this 0x… / is this safe / what does this contract do / explain this tx" → explain
 - "price chart / candlestick / chart for ${NATIVE_SYMBOL}" → getPriceChart
 - "diagram / workflow / flowchart / visualize this contract" → generateDiagram (YOU write the Mermaid code)
 - "generate an image of … / draw …" → generateImage
@@ -335,6 +337,15 @@ export async function POST(req: Request) {
         execute: async () => ({ kind: "tokenList", tokens: SONIC_TOKENS }),
       }),
 
+      explain: tool({
+        description:
+          "Explain / audit a transaction hash OR an address/contract: decode what it does, label the method and parameters, and flag risks (unverified code, large approvals, privileged owner functions, reverts). Use whenever the user pastes a 0x hash or 0x address, or asks 'what is this', 'is this safe', 'what does this contract do'.",
+        parameters: z.object({ target: z.string().describe("A 0x transaction hash or 0x address") }),
+        execute: async ({ target }) => {
+          return await explainTarget(target)
+        },
+      }),
+
       getMarketData: tool({
         description: `Get market data (price, market cap, volume) for Sonic / ${NATIVE_SYMBOL}.`,
         parameters: z.object({}),
@@ -369,26 +380,28 @@ export async function POST(req: Request) {
         description: "Get recent transactions for an address from the Sonic explorer.",
         parameters: z.object({ address: z.string().optional() }),
         execute: async ({ address }) => {
+          const target = address && isAddress(address) ? address : ownerAddress
+          if (!target || !isAddress(target)) return { error: "No valid address available." }
           try {
-            const target = address && isAddress(address) ? address : ownerAddress
-            if (!target || !isAddress(target)) return { error: "No valid address available." }
-            const res = await fetch(`${BLOCKSCOUT_API}/addresses/${target}/transactions?filter=to%20%7C%20from`, {
-              headers: { accept: "application/json" },
-            })
-            if (!res.ok) return { error: "Could not load activity." }
-            const j = await res.json()
-            const items = (j.items ?? []).slice(0, 8).map((t: any) => ({
-              hash: t.hash,
-              from: t.from?.hash,
-              to: t.to?.hash,
-              value: `${formatEther(BigInt(t.value ?? "0"))} ${NATIVE_SYMBOL}`,
-              status: t.status === "ok" ? "Success" : t.status,
-              timestamp: t.timestamp,
-            }))
-            return { kind: "activity", address: target, transactions: items }
+            const res = await fetch(`${BLOCKSCOUT_API}/addresses/${target}/transactions?filter=to%20%7C%20from`, { headers: { accept: "application/json" } })
+            const ctype = res.headers.get("content-type") || ""
+            if (res.ok && ctype.includes("json")) {
+              const j = await res.json()
+              const items = (j.items ?? []).slice(0, 8).map((t: any) => ({
+                hash: t.hash,
+                from: t.from?.hash,
+                to: t.to?.hash,
+                value: `${formatEther(BigInt(t.value ?? "0"))} ${NATIVE_SYMBOL}`,
+                status: t.status === "ok" ? "Success" : t.status,
+                timestamp: t.timestamp,
+              }))
+              return { kind: "activity", address: target, transactions: items }
+            }
           } catch {
-            return { error: "Could not load activity." }
+            /* fall through to explorer link */
           }
+          // No public indexer available without an API key — point to the explorer.
+          return { kind: "activity", address: target, transactions: [], note: "Full history isn't available without an explorer API key — open the address on the Sonic explorer.", explorerUrl: `${EXPLORER_URL}/address/${target}` }
         },
       }),
 

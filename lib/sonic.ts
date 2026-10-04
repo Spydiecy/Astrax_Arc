@@ -57,9 +57,10 @@ export interface TokenInfo {
   decimals: number
 }
 
+// Note: this testnet is periodically reset, so only the native token is guaranteed.
+// Add verified ERC-20s here (symbol/name/address/decimals) as they're deployed.
 export const SONIC_TOKENS: TokenInfo[] = [
   { symbol: "S", name: "Sonic", address: NATIVE_SENTINEL, decimals: 18 },
-  { symbol: "USDT", name: "Tether USD", address: "0xc7D67A9cBB121b3b0b9c053DD9f469523243379A", decimals: 6 },
 ]
 
 export function findToken(nameOrSymbol: string): TokenInfo | undefined {

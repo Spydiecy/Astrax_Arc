@@ -6,7 +6,7 @@ import { useAccount } from "wagmi"
 import {
   Bot, User, Send, Mic, MicOff, Loader2, Wallet, ArrowUpRight, Coins,
   Boxes, LineChart, Link2, Copy, Check, CalendarClock, FileText, Rocket,
-  Paperclip, X, Image as ImageIcon, Code,
+  Paperclip, X, Image as ImageIcon, Code, ShieldCheck, ShieldAlert, Info, AlertTriangle,
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -16,6 +16,7 @@ import { OnboardingModal } from "@/components/onboarding-modal"
 import { TxActionButton, type PendingAction } from "@/components/ui/tx-action-button"
 import TokenListCard from "@/components/ui/token-list-card"
 import CandlestickChart from "@/components/ui/candlestick-chart"
+import { AgentSteps } from "@/components/ui/agent-steps"
 import { uploadFileToIPFS } from "@/lib/pinata"
 import { getCurrentId, newChat, getMessages, saveMessages } from "@/lib/chat-history"
 import type { Message } from "@ai-sdk/react"
@@ -216,13 +217,20 @@ function ToolCard({ result }: { result: any }) {
       return (
         <CardShell icon={<LineChart className="w-4 h-4" />} title="Recent Activity">
           <div className="space-y-2">
-            {result.transactions.length === 0 && <p className="text-sm text-gray-500">No recent transactions.</p>}
+            {result.transactions.length === 0 && (
+              <p className="text-sm text-gray-500">{result.note || "No recent transactions."}</p>
+            )}
             {result.transactions.map((t: any) => (
               <a key={t.hash} href={`${EXPLORER}/tx/${t.hash}`} target="_blank" rel="noreferrer" className="block rounded border border-gray-200 dark:border-gray-800 p-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-900">
                 <div className="flex justify-between"><span className="font-mono text-xs">{short(t.hash)}</span><span className="text-gray-500">{t.value}</span></div>
                 <div className="text-xs text-gray-500">{short(t.from)} → {short(t.to)}</div>
               </a>
             ))}
+            {result.explorerUrl && (
+              <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
+                View on Sonic Explorer <ArrowUpRight className="w-3.5 h-3.5" />
+              </a>
+            )}
           </div>
         </CardShell>
       )
@@ -321,6 +329,61 @@ function ToolCard({ result }: { result: any }) {
           ))}
         </CardShell>
       )
+    case "explain": {
+      const riskStyle = (lvl: string) =>
+        lvl === "high"
+          ? "bg-red-50 dark:bg-red-950/30 border-red-300 dark:border-red-900/60 text-red-700 dark:text-red-300"
+          : lvl === "medium"
+            ? "bg-amber-50 dark:bg-amber-950/30 border-amber-300 dark:border-amber-900/60 text-amber-700 dark:text-amber-300"
+            : "bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-800 text-gray-600 dark:text-gray-300"
+      const RiskIcon = ({ lvl }: { lvl: string }) =>
+        lvl === "high" ? <ShieldAlert className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" /> : lvl === "medium" ? <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" /> : <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+      return (
+        <CardShell icon={<ShieldCheck className="w-4 h-4" />} title={result.title}>
+          <p className="text-sm mb-3 text-gray-700 dark:text-gray-200">{result.summary}</p>
+          {result.fields?.map((f: any, i: number) => (
+            <Field key={i} label={f.label}>{f.mono ? <span className="font-mono text-xs">{f.value}</span> : f.value}</Field>
+          ))}
+          {result.method && (
+            <div className="mt-3 rounded-md border border-gray-200 dark:border-gray-800 p-2">
+              {result.method.name === "functions" ? (
+                <>
+                  <div className="text-xs text-gray-500 mb-1.5">Functions ({result.method.params.length})</div>
+                  <div className="flex flex-wrap gap-1">
+                    {result.method.params.map((p: any, i: number) => (
+                      <span key={i} className="text-xs font-mono px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800">{p.name}</span>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="text-xs text-gray-500 mb-1">Decoded call: <span className="font-mono text-black dark:text-white">{result.method.name}</span></div>
+                  {result.method.params.map((p: any, i: number) => (
+                    <div key={i} className="text-xs flex gap-2 py-0.5">
+                      <span className="text-gray-500 whitespace-nowrap">{p.name || p.type}</span>
+                      <span className="font-mono break-all text-right flex-1">{p.value}</span>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          )}
+          {result.risks?.length > 0 && (
+            <div className="mt-3 space-y-1.5">
+              {result.risks.map((r: any, i: number) => (
+                <div key={i} className={cn("flex items-start gap-2 text-xs rounded-md px-2.5 py-2 border", riskStyle(r.level))}>
+                  <RiskIcon lvl={r.level} />
+                  <span>{r.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
+            View on Sonic Explorer <ArrowUpRight className="w-3.5 h-3.5" />
+          </a>
+        </CardShell>
+      )
+    }
     case "swap":
       return (
         <CardShell icon={<Coins className="w-4 h-4" />} title="Swap">
@@ -354,6 +417,7 @@ const SUGGESTIONS = [
   { icon: <Code className="w-3.5 h-3.5" />, label: "Workflow diagram", prompt: "Draw a workflow diagram for a basic ERC-20 token contract" },
   { icon: <Link2 className="w-3.5 h-3.5" />, label: "Payment link", prompt: "Create a payment link for 0.5 S" },
   { icon: <Boxes className="w-3.5 h-3.5" />, label: "Latest blocks", prompt: "Show me the latest blocks on Sonic" },
+  { icon: <ShieldCheck className="w-3.5 h-3.5" />, label: "Explain a contract", prompt: "Explain this contract and tell me if it's safe: 0xB7a8307A474A2227050c34212Ef84783ece5876f" },
 ]
 
 // Outer manager: owns the active chat id and swaps the keyed session on open.
@@ -492,8 +556,10 @@ function ChatSession({ chatId }: { chatId: string }) {
 
       <div className="flex-1 overflow-y-auto px-4 md:px-6 py-6">
         <div className="w-full space-y-5">
-          {messages.map((m) => {
+          {messages.map((m, idx) => {
             const invocations = (m as any).toolInvocations ?? []
+            const isLastAssistant = idx === messages.length - 1 && m.role === "assistant"
+            const stepsActive = isLoading && isLastAssistant
             return (
               <div key={m.id} className={cn("flex items-start gap-3", m.role === "user" ? "flex-row-reverse" : "")}>
                 <div className={cn(
@@ -503,6 +569,7 @@ function ChatSession({ chatId }: { chatId: string }) {
                   {m.role === "assistant" ? <Bot className="w-4 h-4" /> : <User className="w-4 h-4" />}
                 </div>
                 <div className={cn("flex flex-col", m.role === "user" ? "items-end" : "items-start", "max-w-[85%]")}>
+                  {m.role === "assistant" && <AgentSteps invocations={invocations} active={stepsActive} />}
                   {m.content && (
                     <div className={cn(
                       "rounded-lg p-3.5 border text-sm",

@@ -15,7 +15,9 @@ const WALLETS: never[] = []
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+    // Dark by default for everyone (no OS-based "system" theme). A fresh storage key
+    // so earlier visitors with a stored "system" value also start in dark.
+    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false} storageKey="astrax-theme" disableTransitionOnChange>
       <ConnectionProvider endpoint={RPC_URL}>
         <WalletProvider wallets={WALLETS} autoConnect>
           <WalletModalProvider>

@@ -22,7 +22,7 @@ interface DashboardSidebarProps {
 const short = (a?: string | null) => (a && a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a || "")
 
 export function DashboardSidebar({ open, setOpen }: DashboardSidebarProps) {
-  const { theme } = useTheme()
+  const { resolvedTheme } = useTheme()
   const { privateKey, setPrivateKey, derivedAddress, hasPrivateKey, signingMode, setSigningMode } = useCredentials()
   const [showPrivateKey, setShowPrivateKey] = useState(false)
   const [showPanel, setShowPanel] = useState(false)
@@ -54,7 +54,7 @@ export function DashboardSidebar({ open, setOpen }: DashboardSidebarProps) {
 
   if (!mounted) return null
 
-  const isDark = theme === "dark"
+  const isDark = resolvedTheme !== "light"
 
   const handleNewChat = () => {
     const id = newChat()

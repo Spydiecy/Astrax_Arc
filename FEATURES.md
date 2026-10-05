@@ -70,8 +70,12 @@ that turns chat into on-chain actions.
 - One-time or recurring ("pay alice 1 SOL every week, 4 times"), autonomous mode only.
 - The key is AES-256-GCM encrypted (`SCHEDULER_ENC_KEY`) in the database, used by
   `/api/cron/execute`, and wiped once the job finishes or is cancelled.
-- In dev the open app triggers the job every minute. In production an external scheduler
-  calls it every minute with `CRON_SECRET` (Vercel Cron also runs it daily as a backup).
+- No outside service needed. Any open Astrax tab triggers due jobs every minute, app
+  traffic checks after each request, and 24 hourly Vercel crons (`CRON_SECRET`) cover
+  the time nobody is online. So: within about a minute while the app is open anywhere,
+  otherwise within the hour.
+- Each job is claimed atomically, so it's sent once even if triggers overlap. An
+  interrupted send is marked failed, never retried, so nothing is paid twice.
 - **Sidebar "Scheduled" tab:** list and cancel (owner only).
 
 ## Contacts

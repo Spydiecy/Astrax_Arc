@@ -53,7 +53,8 @@ Browser ──▶ /api/upload        → Pinata (public IPFS)
 Browser ──▶ /api/auth/*        → wallet-ownership session (signed message → cookie)
 Browser ──▶ /api/schedules, /api/payment-links  (owner-only)
 Payers  ──▶ /pay/<id>          → Solana Pay transfer, verified on-chain
-Cron    ──▶ /api/cron/execute  → runs due scheduled payments
+Browser ──▶ /api/scheduler/tick → runs due scheduled payments (throttled, every minute)
+Cron    ──▶ /api/cron/execute  → same, hourly (CRON_SECRET)
 ```
 
 **Where data lives:**
@@ -85,12 +86,19 @@ project's environment variables. Tables are created automatically on first reque
 Without a database URL the app refuses to start its database on Vercel, rather than
 losing data.
 
-**Cron:** Vercel's Hobby plan only allows cron jobs once a day, so `vercel.json` runs
-`/api/cron/execute` daily as a safety net. For on-time payments, call it every minute
-from a free external scheduler such as [cron-job.org](https://cron-job.org):
-`GET https://<your-domain>/api/cron/execute` with the header
-`Authorization: Bearer <CRON_SECRET>`. On the Pro plan you can set the schedule in
-`vercel.json` to `* * * * *` instead.
+**Scheduled payments** run without any outside service, from three triggers:
+- **Open app:** every open tab pings `/api/scheduler/tick` once a minute, so while
+  anyone has Astrax open, due payments go out within about a minute.
+- **App traffic:** chat and schedule requests also check for due jobs after responding.
+- **Vercel Cron:** Hobby only allows each cron to run once a day, so `vercel.json`
+  defines 24 of them (one per hour) on `/api/cron/execute`, authenticated with
+  `CRON_SECRET`. With nobody online, payments go out within the hour. Hobby cron
+  timing is approximate (an "01:00" job may fire any time before 01:59).
+
+Every trigger goes through the same runner. It claims each job atomically in the
+database, so a payment is sent once even if several triggers fire together. A send
+that gets interrupted is marked failed rather than retried, so it can never be paid
+twice. On the Pro plan you can replace the 24 crons with a single `* * * * *`.
 
 ---
 

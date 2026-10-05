@@ -1,17 +1,16 @@
-// Server-only wallet ownership sessions ("sign in with Solana").
+// Server-only wallet ownership sessions ("sign in with Ethereum" style, on Arc).
 //
 // 1. POST /api/auth/challenge → a human-readable message for one address, plus
 //    an HMAC token so the server can later check it issued that exact message.
 // 2. The wallet (or the autonomous key, silently) signs the message — free, no
 //    transaction.
-// 3. POST /api/auth/verify checks the ed25519 signature and sets an HttpOnly
+// 3. POST /api/auth/verify checks the EIP-191 signature and sets an HttpOnly
 //    cookie listing the addresses this browser has proven it controls.
 // Owner-scoped APIs (schedules, payment links, assets) only act for those addresses.
 import "server-only"
 import { createHmac, randomBytes, timingSafeEqual } from "crypto"
-import { ed25519 } from "@noble/curves/ed25519.js"
-import bs58 from "bs58"
-import { isValidAddress } from "./solana"
+import { verifyMessage } from "viem"
+import { addrKey, isValidAddress, normalizeAddress } from "./arc"
 import { consumeNonce } from "./db"
 
 export const SESSION_COOKIE = "astrax_session"
@@ -45,8 +44,8 @@ function safeEqual(a: string, b: string): boolean {
 export function createChallenge(address: string, origin: string): { message: string; token: string } {
   const now = Date.now()
   const message = [
-    `${new URL(origin).host} wants you to sign in with your Solana account:`,
-    address,
+    `${new URL(origin).host} wants you to sign in with your Arc account:`,
+    normalizeAddress(address),
     "",
     "Sign in to Astrax to view and manage your payment links and scheduled payments. This only proves you own this wallet — it doesn't send a transaction or cost anything.",
     "",
@@ -71,26 +70,20 @@ export async function verifyChallenge(
 
   const lines = message.split("\n")
   const field = (k: string) => lines.find((l) => l.startsWith(`${k}: `))?.slice(k.length + 2)
-  if (lines[1] !== address) return { ok: false, error: "Challenge was issued for a different address." }
+  if (lines[1] !== normalizeAddress(address)) return { ok: false, error: "Challenge was issued for a different address." }
   if (field("URI") !== origin) return { ok: false, error: "Challenge was issued for a different site." }
   const exp = Date.parse(field("Expiration Time") || "")
   if (!Number.isFinite(exp) || exp < Date.now()) return { ok: false, error: "Challenge expired. Try again." }
 
-  let sig: Uint8Array
-  try {
-    sig = Uint8Array.from(Buffer.from(signature, "base64"))
-  } catch {
-    return { ok: false, error: "Bad signature encoding." }
-  }
   let valid = false
   try {
-    valid = sig.length === 64 && ed25519.verify(sig, new TextEncoder().encode(message), bs58.decode(address))
+    valid = await verifyMessage({ address: normalizeAddress(address), message, signature: signature as `0x${string}` })
   } catch {
     valid = false
   }
   if (!valid) return { ok: false, error: "Signature doesn't match this wallet." }
   if (!(await consumeNonce(field("Nonce") || "", exp))) return { ok: false, error: "This sign-in was already used." }
-  return { ok: true, address }
+  return { ok: true, address: addrKey(address) }
 }
 
 // ── Session cookie ───────────────────────────────────────────────────────────
@@ -129,7 +122,7 @@ export function sessionAddresses(req: Request): string[] {
 }
 
 export function isOwner(req: Request, address: string | null | undefined): boolean {
-  return Boolean(address) && sessionAddresses(req).includes(address as string)
+  return Boolean(address) && sessionAddresses(req).includes(addrKey(address as string))
 }
 
 /** Set-Cookie header value with `entries` (newest first, capped). */
@@ -142,13 +135,14 @@ function cookieHeader(entries: Entry[], secure: boolean): string {
 }
 
 export function addToSession(req: Request, address: string, secure: boolean): { header: string; addresses: string[] } {
-  const rest = decode(readCookie(req)).filter((x) => x.a !== address)
-  const list = [{ a: address, e: Date.now() + SESSION_TTL_MS }, ...rest].slice(0, MAX_ADDRESSES)
+  const key = addrKey(address)
+  const rest = decode(readCookie(req)).filter((x) => x.a !== key)
+  const list = [{ a: key, e: Date.now() + SESSION_TTL_MS }, ...rest].slice(0, MAX_ADDRESSES)
   return { header: cookieHeader(list, secure), addresses: list.map((x) => x.a) }
 }
 
 export function removeFromSession(req: Request, address: string | null, secure: boolean): { header: string; addresses: string[] } {
-  const list = address ? decode(readCookie(req)).filter((x) => x.a !== address) : []
+  const list = address ? decode(readCookie(req)).filter((x) => x.a !== addrKey(address)) : []
   return { header: cookieHeader(list, secure), addresses: list.map((x) => x.a) }
 }
 

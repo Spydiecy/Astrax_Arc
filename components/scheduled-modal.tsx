@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { CalendarClock, X, Loader2, Trash2, ArrowUpRight, RefreshCw } from "lucide-react"
 import { useCredentials } from "@/contexts/CredentialsContext"
-import { explorerTx } from "@/lib/solana"
+import { useNetwork } from "@/contexts/NetworkContext"
 import { useOwnerSession } from "@/contexts/OwnerSessionContext"
 import { VerifyWalletPrompt } from "@/components/verify-wallet"
 
@@ -19,10 +19,13 @@ interface Schedule {
   remaining: number
   status: string
   lastTx: string | null
+  lastTxUrl: string | null
+  note: string | null
 }
 
 export function ScheduledModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const { activeAddress } = useCredentials()
+  const { network } = useNetwork()
   const { isVerified } = useOwnerSession()
   const [items, setItems] = useState<Schedule[]>([])
   const [loading, setLoading] = useState(false)
@@ -34,7 +37,7 @@ export function ScheduledModal({ isOpen, onClose }: { isOpen: boolean; onClose: 
     }
     setLoading(true)
     try {
-      const res = await fetch(`/api/schedules?owner=${activeAddress}`, { cache: "no-store" })
+      const res = await fetch(`/api/schedules?owner=${activeAddress}&network=${network.key}`, { cache: "no-store" })
       const j = await res.json()
       setItems(res.ok ? j.schedules || [] : [])
     } catch {
@@ -42,7 +45,7 @@ export function ScheduledModal({ isOpen, onClose }: { isOpen: boolean; onClose: 
     } finally {
       setLoading(false)
     }
-  }, [activeAddress, isVerified])
+  }, [activeAddress, isVerified, network.key])
 
   useEffect(() => {
     if (isOpen) load()
@@ -70,6 +73,7 @@ export function ScheduledModal({ isOpen, onClose }: { isOpen: boolean; onClose: 
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-800">
           <div className="flex items-center gap-2 font-semibold">
             <CalendarClock className="w-5 h-5" /> Scheduled Payments
+            <span className="text-xs font-normal text-gray-500">{network.name}</span>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={load} className="p-1.5 rounded-md text-gray-500 hover:text-black dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-900" title="Refresh">
@@ -82,13 +86,13 @@ export function ScheduledModal({ isOpen, onClose }: { isOpen: boolean; onClose: 
         </div>
 
         <div className="overflow-y-auto p-4 space-y-2">
-          {!activeAddress && <p className="text-sm text-gray-500">Load a secret key (Autonomous mode) to schedule payments, or connect the wallet that created them to view them.</p>}
+          {!activeAddress && <p className="text-sm text-gray-500">Load a private key (Autonomous mode) to schedule payments, or connect the wallet that created them to view them.</p>}
           {activeAddress && !isVerified && <VerifyWalletPrompt />}
           {activeAddress && isVerified && loading && items.length === 0 && (
             <div className="flex items-center gap-2 text-sm text-gray-500"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
           )}
           {activeAddress && isVerified && !loading && items.length === 0 && (
-            <p className="text-sm text-gray-500">No scheduled payments yet. Try: “pay 1 SOL to &lt;address&gt; every week for 4 weeks”.</p>
+            <p className="text-sm text-gray-500">No scheduled payments yet. Try: “pay 1 USDC to &lt;address&gt; every week for 4 weeks”.</p>
           )}
           {items.map((s) => (
             <div key={s.id} className="rounded-lg border border-gray-200 dark:border-gray-800 p-3 text-sm">
@@ -101,9 +105,10 @@ export function ScheduledModal({ isOpen, onClose }: { isOpen: boolean; onClose: 
                 {s.intervalSecs > 0 ? `Recurring · ${s.remaining} left · next ` : "Runs "}
                 {new Date(s.nextRun).toLocaleString()}
               </div>
+              {s.status === "failed" && s.note && <div className="text-xs text-red-500 mt-1">{s.note}</div>}
               <div className="flex items-center gap-3 mt-2">
-                {s.lastTx && (
-                  <a href={explorerTx(s.lastTx)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline">
+                {s.lastTxUrl && (
+                  <a href={s.lastTxUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline">
                     Last tx <ArrowUpRight className="w-3 h-3" />
                   </a>
                 )}

@@ -5,6 +5,7 @@ import { Link2, X, Loader2, Trash2, ArrowUpRight, RefreshCw, Copy, Check } from 
 import { useCredentials } from "@/contexts/CredentialsContext"
 import { absoluteUrl } from "@/lib/origin"
 import { useOwnerSession } from "@/contexts/OwnerSessionContext"
+import { useNetwork } from "@/contexts/NetworkContext"
 import { VerifyWalletPrompt } from "@/components/verify-wallet"
 
 interface PaymentLink {
@@ -42,6 +43,7 @@ function CopyLink({ url }: { url: string }) {
 
 export function PaymentLinksModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const { activeAddress } = useCredentials()
+  const { network } = useNetwork()
   const { isVerified } = useOwnerSession()
   const [items, setItems] = useState<PaymentLink[]>([])
   const [loading, setLoading] = useState(false)
@@ -57,7 +59,7 @@ export function PaymentLinksModal({ isOpen, onClose }: { isOpen: boolean; onClos
     setLoading(true)
     try {
       // check=1 re-checks open links on-chain, so QR payments show up as paid.
-      const res = await fetch(`/api/payment-links?owner=${activeAddress}&check=1`, { cache: "no-store" })
+      const res = await fetch(`/api/payment-links?owner=${activeAddress}&network=${network.key}&check=1`, { cache: "no-store" })
       const j = await res.json()
       setItems(res.ok ? j.links || [] : [])
     } catch {
@@ -66,7 +68,7 @@ export function PaymentLinksModal({ isOpen, onClose }: { isOpen: boolean; onClos
       setLoading(false)
       setLoaded(true)
     }
-  }, [activeAddress, isVerified])
+  }, [activeAddress, isVerified, network.key])
 
   useEffect(() => {
     if (isOpen) load()
@@ -95,6 +97,7 @@ export function PaymentLinksModal({ isOpen, onClose }: { isOpen: boolean; onClos
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-800">
           <h2 id="payment-links-title" className="flex items-center gap-2 font-semibold">
             <Link2 className="w-5 h-5" /> Payment Links
+            <span className="text-xs font-normal text-gray-500">{network.name}</span>
           </h2>
           <div className="flex items-center gap-2">
             <button onClick={load} aria-label="Refresh" className="p-1.5 rounded-md text-gray-500 hover:text-black dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-900">
@@ -107,13 +110,13 @@ export function PaymentLinksModal({ isOpen, onClose }: { isOpen: boolean; onClos
         </div>
 
         <div className="overflow-y-auto p-4 space-y-2">
-          {!activeAddress && <p className="text-sm text-gray-500">Connect a wallet or load a secret key to see your payment links.</p>}
+          {!activeAddress && <p className="text-sm text-gray-500">Connect a wallet or load a private key to see your payment links.</p>}
           {activeAddress && !isVerified && <VerifyWalletPrompt />}
           {activeAddress && isVerified && (loading || !loaded) && items.length === 0 && (
             <div className="flex items-center gap-2 text-sm text-gray-500"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
           )}
           {activeAddress && isVerified && loaded && !loading && items.length === 0 && (
-            <p className="text-sm text-gray-500">No payment links yet. Try: “create a payment link for 0.5 SOL for design work”.</p>
+            <p className="text-sm text-gray-500">No payment links yet. Try: “create a payment link for 25 USDC for design work”.</p>
           )}
           {items.map((l) => (
             <div key={l.id} className="rounded-lg border border-gray-200 dark:border-gray-800 p-3 text-sm">

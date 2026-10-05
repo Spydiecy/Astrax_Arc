@@ -4,7 +4,7 @@ import { useState } from "react"
 import {
   Sparkles, Wallet, Zap, ArrowRight, ArrowLeft, Check,
   Send, Rocket, Link2, CalendarClock, Boxes, X,
-  LineChart, GitBranch, Image as ImageIcon, FileUp, Lock,
+  LineChart, GitBranch, Image as ImageIcon, FileUp, Lock, Globe,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -24,12 +24,13 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
       body: (
         <div className="space-y-3 text-sm text-gray-600 dark:text-gray-300">
           <p>
-            Astrax is your AI agent for <strong className="text-black dark:text-white">Solana</strong>.
-            Just chat in plain English and it turns your words into real on-chain actions.
+            Astrax is your AI agent for <strong className="text-black dark:text-white">Arc</strong>, the
+            EVM Layer-1 where USDC is the gas token. Just chat in plain English and it turns your words
+            into real on-chain actions.
           </p>
           <div className="grid grid-cols-2 gap-2 pt-1">
             {[
-              { icon: <Send className="w-4 h-4" />, label: "Send SOL & tokens" },
+              { icon: <Send className="w-4 h-4" />, label: "Send USDC & tokens" },
               { icon: <Rocket className="w-4 h-4" />, label: "Create tokens & NFTs" },
               { icon: <Link2 className="w-4 h-4" />, label: "Tracked payment links" },
               { icon: <CalendarClock className="w-4 h-4" />, label: "Schedule payments" },
@@ -53,6 +54,30 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
       ),
     },
     {
+      icon: <Globe className="w-6 h-6" />,
+      title: "Mainnet or Testnet",
+      body: (
+        <div className="space-y-3 text-sm">
+          <p className="text-gray-600 dark:text-gray-300">
+            Use the network switcher in the top bar to move between the two Arc networks. Balances,
+            payment links, schedules and the agent all follow your choice, and your wallet is asked to switch too.
+          </p>
+          <div className="rounded-lg border border-gray-200 dark:border-gray-800 p-3">
+            <div className="font-medium text-black dark:text-white">Arc Mainnet <span className="ml-1 text-[10px] font-bold text-emerald-600">LIVE</span></div>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Real USDC. Transactions are final in under a second and can&apos;t be undone.</p>
+          </div>
+          <div className="rounded-lg border border-gray-200 dark:border-gray-800 p-3">
+            <div className="font-medium text-black dark:text-white">Arc Testnet <span className="ml-1 text-[10px] font-bold text-amber-600">TEST</span></div>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Free test USDC from the{" "}
+              <a className="underline" href="https://faucet.circle.com" target="_blank" rel="noreferrer">Circle faucet</a>.
+              New visitors start here, so try things out first.
+            </p>
+          </div>
+        </div>
+      ),
+    },
+    {
       icon: <Wallet className="w-6 h-6" />,
       title: "Choose how you sign",
       body: (
@@ -63,8 +88,8 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
               <Wallet className="w-4 h-4" /> Wallet mode
             </div>
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Connect your wallet. Astrax prepares each transaction and you approve it with a one-click
-              button right in the chat. Nothing is ever signed without you.
+              Connect MetaMask, Rabby, Coinbase Wallet or any EVM wallet. Astrax prepares each transaction
+              and you approve it with a one-click button right in the chat. Nothing is ever signed without you.
             </p>
           </div>
           <div className="rounded-lg border border-gray-200 dark:border-gray-800 p-3">
@@ -72,10 +97,11 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
               <Zap className="w-4 h-4" /> Autonomous mode
             </div>
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Paste a secret key (your address is derived automatically). Astrax signs for you — no
-              popups — which unlocks hands-free features like <strong>scheduled payments</strong>.
-              Devnet only. The key stays in this browser and is never put in the prompt; it&apos;s only
-              stored (encrypted) on the server for payments you schedule.
+              Paste a private key (your address is derived automatically). Astrax signs for you, with no
+              popups, which unlocks hands-free features like <strong>scheduled payments</strong>. Use a
+              dedicated wallet with a small balance. The key is kept in this browser and sent only with your
+              own requests (never put in the AI prompt); it&apos;s stored encrypted on the server only for
+              payments you schedule.
             </p>
           </div>
         </div>
@@ -87,13 +113,13 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
       body: (
         <div className="space-y-2">
           {[
-            "What's my SOL balance?",
-            "Send 1 SOL to <address>",
+            "What's my USDC balance?",
+            "Send 1 USDC to <address>",
             "Create a token MoonCoin MOON supply 1000000",
-            "Make a payment link for 0.5 SOL",
-            "Show the SOL price chart",
-            "Draw a workflow diagram for minting an SPL token",
-            "Schedule 2 SOL to <address> in 10 minutes",
+            "Make a payment link for 5 USDC",
+            "Show the ETH price chart",
+            "Draw a workflow diagram for an ERC-20 transfer",
+            "Schedule 2 USDC to <address> in 10 minutes",
           ].map((ex) => (
             <div key={ex} className="rounded-lg bg-gray-100 dark:bg-gray-900 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 font-mono">
               “{ex}”

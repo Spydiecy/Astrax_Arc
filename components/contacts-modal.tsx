@@ -5,7 +5,8 @@ import { BookUser, X, Loader2, Trash2, Pencil, Copy, Check, Plus, ArrowUpRight, 
 import { useCredentials } from "@/contexts/CredentialsContext"
 import { useOwnerSession } from "@/contexts/OwnerSessionContext"
 import { VerifyWalletPrompt } from "@/components/verify-wallet"
-import { explorerAddress, isValidAddress } from "@/lib/solana"
+import { explorerAddress, isSendableAddress } from "@/lib/arc"
+import { useNetwork } from "@/contexts/NetworkContext"
 
 interface Contact {
   name: string
@@ -33,6 +34,7 @@ function CopyAddress({ value }: { value: string }) {
 
 export function ContactsModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const { activeAddress } = useCredentials()
+  const { network } = useNetwork()
   const { isVerified } = useOwnerSession()
   const [items, setItems] = useState<Contact[]>([])
   const [loading, setLoading] = useState(false)
@@ -102,7 +104,7 @@ export function ContactsModal({ isOpen, onClose }: { isOpen: boolean; onClose: (
     const n = name.replace(/^@+/, "").trim()
     const a = address.trim()
     if (!n) return setFormError("Give the contact a name.")
-    if (!isValidAddress(a)) return setFormError("That isn't a valid Solana address.")
+    if (!isSendableAddress(a)) return setFormError("That isn't a valid Arc address (0x followed by 40 hex characters).")
     const clash = items.find((c) => c.name.toLowerCase() === n.toLowerCase() && c.name !== editing)
     if (clash && !window.confirm(`You already have a contact called "${clash.name}". Replace its address?`)) return
     setSaving(true)
@@ -162,7 +164,7 @@ export function ContactsModal({ isOpen, onClose }: { isOpen: boolean; onClose: (
         </div>
 
         <div className="overflow-y-auto p-4 space-y-2">
-          {!activeAddress && <p className="text-sm text-gray-500">Connect a wallet or load a secret key to see your contacts.</p>}
+          {!activeAddress && <p className="text-sm text-gray-500">Connect a wallet or load a private key to see your contacts.</p>}
           {activeAddress && !isVerified && <VerifyWalletPrompt />}
 
           {activeAddress && isVerified && editing !== null && (
@@ -172,8 +174,8 @@ export function ContactsModal({ isOpen, onClose }: { isOpen: boolean; onClose: (
                 <input id="contact-name" ref={nameRef} value={name} maxLength={MAX_NAME} onChange={(e) => setName(e.target.value)} placeholder="alice" className={inputCls} autoComplete="off" />
               </div>
               <div>
-                <label htmlFor="contact-address" className="block text-xs text-gray-500 mb-1">Solana address</label>
-                <input id="contact-address" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="e.g. 9xQeWvG8…" className={`${inputCls} font-mono text-xs`} autoComplete="off" spellCheck={false} />
+                <label htmlFor="contact-address" className="block text-xs text-gray-500 mb-1">Arc address</label>
+                <input id="contact-address" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="0x…" className={`${inputCls} font-mono text-xs`} autoComplete="off" spellCheck={false} />
               </div>
               {formError && <p className="text-xs text-red-600 dark:text-red-400" role="alert">{formError}</p>}
               <div className="flex justify-end gap-2 pt-1">
@@ -199,7 +201,7 @@ export function ContactsModal({ isOpen, onClose }: { isOpen: boolean; onClose: (
             <div className="flex items-center gap-2 text-sm text-gray-500"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
           )}
           {activeAddress && isVerified && loaded && !loading && items.length === 0 && editing === null && (
-            <p className="text-sm text-gray-500">No contacts yet. Add one here, or say “save alice as &lt;address&gt;” — then just “send 1 SOL to alice”.</p>
+            <p className="text-sm text-gray-500">No contacts yet. Add one here, or say “save alice as &lt;address&gt;” — then just “send 1 USDC to alice”.</p>
           )}
           {q && shown.length === 0 && <p className="text-sm text-gray-500">No contacts match “{query}”.</p>}
 
@@ -210,7 +212,7 @@ export function ContactsModal({ isOpen, onClose }: { isOpen: boolean; onClose: (
                 <div className="font-mono text-xs text-gray-500 dark:text-gray-400" title={c.address}>{short(c.address)}</div>
               </div>
               <CopyAddress value={c.address} />
-              <a href={explorerAddress(c.address)} target="_blank" rel="noreferrer" aria-label={`View ${c.name} on the explorer`} title="View on explorer" className="p-1 rounded text-gray-500 hover:text-black dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-900">
+              <a href={explorerAddress(network, c.address)} target="_blank" rel="noreferrer" aria-label={`View ${c.name} on the explorer`} title="View on explorer" className="p-1 rounded text-gray-500 hover:text-black dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-900">
                 <ArrowUpRight className="w-3.5 h-3.5" />
               </a>
               <button type="button" onClick={() => openForm(c)} aria-label={`Edit ${c.name}`} title="Edit" className="p-1 rounded text-gray-500 hover:text-black dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-900">

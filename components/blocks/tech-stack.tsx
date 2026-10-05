@@ -20,13 +20,13 @@ const LAYERS: { icon: LucideIcon; label: string; detail: string; items: string[]
     icon: Wallet,
     label: "Wallets",
     detail: "Approve in your wallet, or sign autonomously",
-    items: ["Solana Wallet Adapter", "Wallet Standard", "Sign-in with Solana"],
+    items: ["RainbowKit", "wagmi", "EIP-191 sign-in"],
   },
   {
     icon: Blocks,
     label: "Chain",
     detail: "Transfers, tokens, NFTs and payment tracking",
-    items: ["@solana/web3.js", "SPL Token & Token-2022", "Solana Pay"],
+    items: ["viem", "Arc Mainnet & Testnet", "ERC-20 / ERC-721 (solc)"],
   },
   {
     icon: Database,

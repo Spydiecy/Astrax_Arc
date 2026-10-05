@@ -1,10 +1,12 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { useWallet } from "@solana/wallet-adapter-react"
-import { useWalletModal } from "@solana/wallet-adapter-react-ui"
-import { Wallet, ChevronDown, Copy, Check, LogOut, RefreshCw, Loader2, ShieldCheck } from "lucide-react"
+import { useAccount, useDisconnect } from "wagmi"
+import { useConnectModal } from "@rainbow-me/rainbowkit"
+import { Wallet, ChevronDown, Copy, Check, LogOut, RefreshCw, Loader2, ShieldCheck, ArrowUpRight } from "lucide-react"
 import { useOwnerSession } from "@/contexts/OwnerSessionContext"
+import { useNetwork } from "@/contexts/NetworkContext"
+import { addrKey, explorerAddress } from "@/lib/arc"
 import { cn } from "@/lib/utils"
 
 // Same footprint as the header's theme toggle (h-10, pill, thin border).
@@ -13,12 +15,14 @@ const pill =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 dark:focus-visible:ring-gray-500 " +
   "disabled:opacity-60 disabled:cursor-not-allowed"
 
-const short = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`
+const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`
 
 export function CustomConnectButton({ className }: { className?: string }) {
-  const { publicKey, wallet, connected, connecting, disconnect } = useWallet()
-  const { setVisible } = useWalletModal()
+  const { address, connector, isConnected, isConnecting, isReconnecting } = useAccount()
+  const { disconnectAsync } = useDisconnect()
+  const { openConnectModal } = useConnectModal()
   const { signOut, verifiedAddresses } = useOwnerSession()
+  const { network } = useNetwork()
   const [mounted, setMounted] = useState(false)
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -47,8 +51,6 @@ export function CustomConnectButton({ className }: { className?: string }) {
     }
   }, [open])
 
-  const address = publicKey?.toBase58()
-
   const copy = useCallback(async () => {
     if (!address) return
     await navigator.clipboard.writeText(address)
@@ -59,16 +61,17 @@ export function CustomConnectButton({ className }: { className?: string }) {
   // Wallet state only exists in the browser; reserve the space to avoid a layout jump.
   if (!mounted) return <div className={cn("h-10 w-[150px]", className)} aria-hidden />
 
-  if (!connected || !address) {
+  if (!isConnected || !address) {
+    const busy = isConnecting || isReconnecting
     return (
       <button
         type="button"
-        onClick={() => setVisible(true)}
-        disabled={connecting}
+        onClick={() => openConnectModal?.()}
+        disabled={busy}
         className={cn(pill, "bg-gray-900 text-white hover:bg-gray-800 dark:bg-white dark:text-black dark:hover:bg-gray-200", className)}
       >
-        {connecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wallet className="h-4 w-4" />}
-        {connecting ? "Connecting…" : "Connect Wallet"}
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wallet className="h-4 w-4" />}
+        {busy ? "Connecting…" : "Connect Wallet"}
       </button>
     )
   }
@@ -90,9 +93,9 @@ export function CustomConnectButton({ className }: { className?: string }) {
           "border border-gray-300 dark:border-white/20 bg-white dark:bg-black text-black dark:text-white hover:bg-gray-100 dark:hover:bg-white/10",
         )}
       >
-        {wallet?.adapter.icon ? (
+        {connector?.icon ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={wallet.adapter.icon} alt="" className="h-4 w-4 rounded-sm" />
+          <img src={connector.icon} alt="" className="h-4 w-4 rounded-sm" />
         ) : (
           <Wallet className="h-4 w-4" />
         )}
@@ -103,12 +106,12 @@ export function CustomConnectButton({ className }: { className?: string }) {
       {open && (
         <div
           role="menu"
-          className="absolute right-0 z-50 mt-2 w-56 rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-black p-1 shadow-lg text-black dark:text-white"
+          className="absolute right-0 z-50 mt-2 w-60 rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-black p-1 shadow-lg text-black dark:text-white"
         >
           <div className="px-3 pt-2 pb-1.5">
             <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
-              <span>{wallet?.adapter.name ?? "Wallet"}</span>
-              {verifiedAddresses.includes(address) && (
+              <span>{connector?.name ?? "Wallet"}</span>
+              {verifiedAddresses.includes(addrKey(address)) && (
                 <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400"><ShieldCheck className="h-3 w-3" /> Verified</span>
               )}
             </div>
@@ -119,12 +122,16 @@ export function CustomConnectButton({ className }: { className?: string }) {
             {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             {copied ? "Copied" : "Copy address"}
           </button>
+          <a role="menuitem" href={explorerAddress(network, address)} target="_blank" rel="noreferrer" className={itemCls} onClick={() => setOpen(false)}>
+            <ArrowUpRight className="h-4 w-4" /> View on {network.name} explorer
+          </a>
           <button
             type="button"
             role="menuitem"
-            onClick={() => {
+            onClick={async () => {
               setOpen(false)
-              setVisible(true)
+              await disconnectAsync().catch(() => {})
+              openConnectModal?.()
             }}
             className={itemCls}
           >
@@ -136,7 +143,7 @@ export function CustomConnectButton({ className }: { className?: string }) {
             onClick={() => {
               setOpen(false)
               signOut(address).catch(() => {}) // end this wallet's owner session too
-              disconnect().catch(() => {})
+              disconnectAsync().catch(() => {})
             }}
             className={cn(itemCls, "text-red-600 dark:text-red-400")}
           >

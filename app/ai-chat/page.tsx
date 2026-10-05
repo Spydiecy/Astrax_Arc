@@ -2,7 +2,7 @@
 
 import { useChat } from "@ai-sdk/react"
 import { useEffect, useRef, useState } from "react"
-import { useWallet } from "@solana/wallet-adapter-react"
+import { useAccount } from "wagmi"
 import {
   Bot, User, Send, Mic, MicOff, Loader2, Wallet, ArrowUpRight, Coins,
   Boxes, LineChart, Link2, Copy, Check, CalendarClock, FileText, Rocket,
@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { useCredentials } from "@/contexts/CredentialsContext"
+import { useNetwork } from "@/contexts/NetworkContext"
 import { OnboardingModal } from "@/components/onboarding-modal"
 import { TxActionButton, type PendingAction } from "@/components/ui/tx-action-button"
 import TokenListCard from "@/components/ui/token-list-card"
@@ -21,7 +22,7 @@ import { AgentSteps } from "@/components/ui/agent-steps"
 import { Markdown } from "@/components/ui/markdown"
 
 import { getCurrentId, newChat, getMessages, saveMessages, chatStorageKey } from "@/lib/chat-history"
-import { explorerTx } from "@/lib/solana"
+import { ARC_NETWORKS, explorerTx, isNetworkKey, type ArcNetwork } from "@/lib/arc"
 import { absoluteUrl } from "@/lib/origin"
 import { VerifyWalletPrompt } from "@/components/verify-wallet"
 import type { Message } from "@ai-sdk/react"
@@ -59,7 +60,7 @@ function cardUrls(invocations: any[]): Set<string> {
 
 /**
  * Drop lines whose only content is a link the card below already shows
- * (e.g. "🔗 **[0.01 SOL](http://…/pay/pl_…)**"). Links inside a sentence stay.
+ * (e.g. "🔗 **[5 USDC](http://…/pay/pl_…)**"). Links inside a sentence stay.
  */
 function dropCardLinkLines(text: string, urls: Set<string>): string {
   if (urls.size === 0) return text
@@ -228,7 +229,9 @@ function linkHref(r: { path?: string; url?: string }): string {
 }
 
 // ── Render a tool result into a card ────────────────────────────────────────────
-function ToolCard({ result, callId }: { result: any; callId?: string }) {
+function ToolCard({ result, callId, fallbackNetwork }: { result: any; callId?: string; fallbackNetwork: ArcNetwork }) {
+  // Results remember the network they ran on; older ones fall back to the current network.
+  const net = isNetworkKey(result?.network) ? ARC_NETWORKS[result.network as keyof typeof ARC_NETWORKS] : fallbackNetwork
   if (result?.needsAuth) {
     return (
       <div className="mt-3 w-full max-w-xl">
@@ -263,7 +266,7 @@ function ToolCard({ result, callId }: { result: any; callId?: string }) {
       return (
         <CardShell icon={<ArrowUpRight className="w-4 h-4" />} title={result.action === "send" ? "Payment Sent" : result.action === "mint" ? "Tokens Minted" : "Transaction"}>
           <div className="flex items-center justify-between gap-3 text-sm py-1">
-            <span className="text-gray-500 dark:text-gray-400">Signature</span>
+            <span className="text-gray-500 dark:text-gray-400">Tx hash</span>
             <span className="font-mono text-xs flex items-center gap-1">{short(result.hash)} <CopyBtn value={result.hash} /></span>
           </div>
           {result.status && <Field label="Status">{result.status}</Field>}
@@ -273,7 +276,7 @@ function ToolCard({ result, callId }: { result: any; callId?: string }) {
           {result.blockNumber && <Field label="Block">{result.blockNumber}</Field>}
           {result.fee && <Field label="Fee">{result.fee}</Field>}
           <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
-            View on Solana Explorer <ArrowUpRight className="w-3.5 h-3.5" />
+            View on Arc Explorer <ArrowUpRight className="w-3.5 h-3.5" />
           </a>
         </CardShell>
       )
@@ -292,15 +295,20 @@ function ToolCard({ result, callId }: { result: any; callId?: string }) {
       )
     case "block":
       return (
-        <CardShell icon={<Boxes className="w-4 h-4" />} title={`Slot #${result.blockNumber}`}>
+        <CardShell icon={<Boxes className="w-4 h-4" />} title={`Block #${result.blockNumber}`}>
           <Field label="Hash">{short(result.hash)}</Field>
           <Field label="Time">{result.timestamp}</Field>
           <Field label="Transactions">{result.transactionCount}</Field>
-          {result.parentSlot && <Field label="Parent slot">{result.parentSlot}</Field>}
+          {result.gasUsed && <Field label="Gas used">{Number(result.gasUsed).toLocaleString()}</Field>}
+          {result.explorerUrl && (
+            <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
+              View on Arc Explorer <ArrowUpRight className="w-3.5 h-3.5" />
+            </a>
+          )}
         </CardShell>
       )
     case "tokenList":
-      return <div className="mt-3 w-full max-w-xl"><TokenListCard tokens={result.tokens} /></div>
+      return <div className="mt-3 w-full max-w-xl"><TokenListCard tokens={result.tokens} network={net} /></div>
     case "candlestick":
       return (
         <div className="mt-3 w-full max-w-2xl">
@@ -329,14 +337,18 @@ function ToolCard({ result, callId }: { result: any; callId?: string }) {
               <p className="text-sm text-gray-500">{result.note || "No recent transactions."}</p>
             )}
             {result.transactions.map((t: any) => (
-              <a key={t.hash} href={explorerTx(t.hash)} target="_blank" rel="noreferrer" className="block rounded border border-gray-200 dark:border-gray-800 p-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-900">
+              <a key={t.hash} href={explorerTx(net, t.hash)} target="_blank" rel="noreferrer" className="block rounded border border-gray-200 dark:border-gray-800 p-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-900">
                 <div className="flex justify-between"><span className="font-mono text-xs">{short(t.hash)}</span><span className={t.status === "Failed" ? "text-red-500" : "text-gray-500"}>{t.status}</span></div>
+                <div className="flex justify-between text-xs text-gray-500">
+                  <span>{t.from && t.to ? `${short(t.from)} → ${short(t.to)}` : ""}</span>
+                  <span>{t.value}</span>
+                </div>
                 {t.timestamp && <div className="text-xs text-gray-500">{t.timestamp}</div>}
               </a>
             ))}
             {result.explorerUrl && (
               <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
-                View on Solana Explorer <ArrowUpRight className="w-3.5 h-3.5" />
+                View on Arc Explorer <ArrowUpRight className="w-3.5 h-3.5" />
               </a>
             )}
           </div>
@@ -352,11 +364,14 @@ function ToolCard({ result, callId }: { result: any; callId?: string }) {
             <img src={result.image} alt="NFT artwork" className="my-2 max-h-40 rounded-md border border-gray-200 dark:border-gray-800" />
           )}
           <div className="flex items-center justify-between gap-3 text-sm py-1">
-            <span className="text-gray-500 dark:text-gray-400">Mint</span>
-            <span className="font-mono text-xs flex items-center gap-1">{short(result.contractAddress)} <CopyBtn value={result.contractAddress || ""} /></span>
+            <span className="text-gray-500 dark:text-gray-400">Contract</span>
+            <span className="font-mono text-xs flex items-center gap-1">
+              {result.contractUrl ? <a href={result.contractUrl} target="_blank" rel="noreferrer" className="hover:underline">{short(result.contractAddress)}</a> : short(result.contractAddress)}
+              <CopyBtn value={result.contractAddress || ""} />
+            </span>
           </div>
           <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
-            View on Solana Explorer <ArrowUpRight className="w-3.5 h-3.5" />
+            View on Arc Explorer <ArrowUpRight className="w-3.5 h-3.5" />
           </a>
         </CardShell>
       )
@@ -514,7 +529,7 @@ function ToolCard({ result, callId }: { result: any; callId?: string }) {
             </div>
           )}
           <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
-            View on Solana Explorer <ArrowUpRight className="w-3.5 h-3.5" />
+            View on Arc Explorer <ArrowUpRight className="w-3.5 h-3.5" />
           </a>
         </CardShell>
       )
@@ -533,26 +548,26 @@ function ToolCard({ result, callId }: { result: any; callId?: string }) {
   }
 }
 
-const WELCOME = `Hey, I'm **Astrax** 👋 — your AI agent for **Solana**.
+const welcome = (n: ArcNetwork) => `Hey, I'm **Astrax** 👋, your AI agent for **Arc**, where **USDC** is the gas token. You're on **${n.name}**${n.isTestnet ? " (free test USDC)" : " (real USDC)"}; switch networks in the top bar.
 
 Try things like:
-- "What's my **SOL** balance?"
-- "Send **1 SOL** to \`<address>\`"
+- "What's my **USDC** balance?"
+- "Send **1 USDC** to \`0x…\`"
 - "Create a token **MoonCoin MOON** supply **1000000**"
-- "Show the **latest blocks**" or "**SOL** market data"
-- "Create a **payment link** for 0.5 SOL"
-- "Schedule **2 SOL** to \`<address>\` **in 10 minutes**"
+- "Show the **latest blocks**" or "**EURC** market data"
+- "Create a **payment link** for 5 USDC"
+- "Schedule **2 USDC** to \`0x…\` **in 10 minutes**"
 
-Pick a signing mode in the sidebar **Signing** panel — connect a **wallet** (approve each txn with a button) or go **autonomous** with a secret key. Tap **How it works** anytime for the tour.`
+Pick a signing mode in the sidebar **Signing** panel: connect a **wallet** (approve each txn with a button) or go **autonomous** with a private key. Tap **How it works** anytime for the tour.`
 
 const SUGGESTIONS = [
-  { icon: <Wallet className="w-3.5 h-3.5" />, label: "Check my SOL balance", prompt: "What's my SOL balance?" },
-  { icon: <LineChart className="w-3.5 h-3.5" />, label: "SOL price chart", prompt: "Show me the SOL price chart for the last 7 days" },
+  { icon: <Wallet className="w-3.5 h-3.5" />, label: "Check my USDC balance", prompt: "What's my USDC balance?" },
+  { icon: <LineChart className="w-3.5 h-3.5" />, label: "ETH price chart", prompt: "Show me the ETH price chart for the last 7 days" },
   { icon: <Rocket className="w-3.5 h-3.5" />, label: "Create a token", prompt: "Create a token called MoonCoin with symbol MOON and supply 1000000" },
-  { icon: <Code className="w-3.5 h-3.5" />, label: "Workflow diagram", prompt: "Draw a workflow diagram for minting an SPL token" },
-  { icon: <Link2 className="w-3.5 h-3.5" />, label: "Payment link", prompt: "Create a payment link for 0.5 SOL" },
-  { icon: <Boxes className="w-3.5 h-3.5" />, label: "Latest blocks", prompt: "Show me the latest blocks on Solana" },
-  { icon: <ShieldCheck className="w-3.5 h-3.5" />, label: "Explain an address", prompt: "Explain this address and tell me if it's safe: So11111111111111111111111111111111111111112" },
+  { icon: <Code className="w-3.5 h-3.5" />, label: "Workflow diagram", prompt: "Draw a workflow diagram for creating and sending an ERC-20 token on Arc" },
+  { icon: <Link2 className="w-3.5 h-3.5" />, label: "Payment link", prompt: "Create a payment link for 5 USDC" },
+  { icon: <Boxes className="w-3.5 h-3.5" />, label: "Latest blocks", prompt: "Show me the latest blocks on Arc" },
+  { icon: <ShieldCheck className="w-3.5 h-3.5" />, label: "Explain an address", prompt: "Explain this address and tell me if it's safe: 0x3600000000000000000000000000000000000000" },
 ]
 
 // Outer manager: owns the active chat id and swaps the keyed session on open.
@@ -577,8 +592,9 @@ export default function AstraxChatPage() {
 
 function ChatSession({ chatId }: { chatId: string }) {
   const { privateKey, signingMode } = useCredentials()
-  const { publicKey } = useWallet()
-  const address = publicKey?.toBase58() ?? null
+  const { address: connected } = useAccount()
+  const address = connected ?? null
+  const { network } = useNetwork()
   const [isRecording, setIsRecording] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [files, setFiles] = useState<File[]>([])
@@ -588,12 +604,12 @@ function ChatSession({ chatId }: { chatId: string }) {
   const recognitionRef = useRef<any>(null)
 
   // Keep the latest signing context in a ref so each request sends fresh values.
-  const ctxRef = useRef({ privateKey, signingMode, address })
-  ctxRef.current = { privateKey, signingMode, address }
+  const ctxRef = useRef({ privateKey, signingMode, address, network: network.key })
+  ctxRef.current = { privateKey, signingMode, address, network: network.key }
 
   const stored = getMessages(chatId)
   const initialMessages: Message[] =
-    stored.length > 0 ? (stored as unknown as Message[]) : [{ id: "welcome", role: "assistant", content: WELCOME }]
+    stored.length > 0 ? (stored as unknown as Message[]) : [{ id: "welcome", role: "assistant", content: welcome(network) }]
 
   const { messages, input, handleInputChange, handleSubmit, status, setInput, append, setMessages, reload, error } = useChat({
     api: "/api/agent",
@@ -608,10 +624,18 @@ function ChatSession({ chatId }: { chatId: string }) {
       signingMode: ctxRef.current.signingMode,
       credentials: { privateKey: ctxRef.current.privateKey },
       walletAddress: ctxRef.current.address ?? null,
+      network: ctxRef.current.network,
     }),
   })
 
   const isLoading = status === "submitted" || status === "streaming"
+
+  // Keep the greeting in sync with the network switcher until the chat starts.
+  useEffect(() => {
+    if (messages.length === 1 && messages[0].id === "welcome" && messages[0].content !== welcome(network)) {
+      setMessages([{ id: "welcome", role: "assistant", content: welcome(network) }])
+    }
+  }, [network, messages, setMessages])
 
   // ── Edit / regenerate ──────────────────────────────────────────────────────
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -830,7 +854,7 @@ function ChatSession({ chatId }: { chatId: string }) {
                     </div>
                   )}
                   {invocations.map((inv: any) =>
-                    inv.state === "result" ? <ToolCard key={inv.toolCallId} callId={inv.toolCallId} result={inv.result} /> : null,
+                    inv.state === "result" ? <ToolCard key={inv.toolCallId} callId={inv.toolCallId} result={inv.result} fallbackNetwork={network} /> : null,
                   )}
                   {!isEditing && !stepsActive && (shown || canRegenerate) && (
                     <div className={cn("mt-1 flex items-center gap-0.5 transition-opacity", actionsVisibility)}>

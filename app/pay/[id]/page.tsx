@@ -4,20 +4,24 @@ import { useParams } from "next/navigation"
 import { useCallback, useEffect, useState } from "react"
 import QRCode from "qrcode"
 import { Copy, Check, ExternalLink, Loader2, CheckCircle2, XCircle } from "lucide-react"
-import { useConnection, useWallet } from "@solana/wallet-adapter-react"
-import { PublicKey } from "@solana/web3.js"
+import { useAccount } from "wagmi"
+import { getWalletClient, switchChain } from "wagmi/actions"
 import { Card } from "@/components/ui/card"
 import { CustomConnectButton } from "@/components/ui/connect-wallet-button"
-import { buildSolTransfer } from "@/lib/spl"
-import { CLUSTER_LABEL, explorerTx } from "@/lib/solana"
+import { wagmiConfig } from "@/lib/wagmi"
+import { estimateArcFees, explorerTx, getPublicClient, resolveNetwork, addrKey, type NetworkKey } from "@/lib/arc"
+import { buildNativeTransfer, friendlyError } from "@/lib/evm"
 
 interface Link {
   id: string
+  url: string
+  network: NetworkKey
+  chainId: number
   recipient: string
   amount: string
   token: string
   description: string
-  reference: string
+  reference: `0x${string}`
   status: "open" | "paid" | "cancelled"
   paidSignature: string | null
   paidExplorerUrl: string | null
@@ -44,14 +48,13 @@ function CopyText({ value }: { value: string }) {
 
 export default function PayPage() {
   const { id } = useParams<{ id: string }>()
-  const { connection } = useConnection()
-  const { publicKey, connected, sendTransaction } = useWallet()
+  const { address, isConnected, chainId: walletChainId } = useAccount()
   const [link, setLink] = useState<Link | null>(null)
   const [loadError, setLoadError] = useState("")
   const [qr, setQr] = useState("")
   const [phase, setPhase] = useState<"idle" | "wallet" | "confirming" | "error">("idle")
   const [txError, setTxError] = useState("")
-  const [sentSig, setSentSig] = useState("")
+  const [sentHash, setSentHash] = useState("")
 
   const load = useCallback(async () => {
     try {
@@ -66,41 +69,60 @@ export default function PayPage() {
 
   useEffect(() => { load() }, [load])
 
-  // Poll while open so payments made from a phone (QR) show up here too.
+  // Poll while open so a payment made on another device shows up here too.
   useEffect(() => {
     if (link?.status !== "open") return
     const t = setInterval(() => { if (document.visibilityState === "visible") load() }, POLL_MS)
     return () => clearInterval(t)
   }, [link?.status, load])
 
+  // The QR opens this same page, e.g. in a mobile wallet's built-in browser.
   useEffect(() => {
     if (!link || link.status !== "open") return
-    const params = new URLSearchParams({ amount: link.amount, reference: link.reference, label: "Astrax" })
-    if (link.description) params.set("message", link.description)
-    QRCode.toDataURL(`solana:${link.recipient}?${params.toString()}`, { width: 200, margin: 2 }).then(setQr).catch(() => setQr(""))
+    QRCode.toDataURL(window.location.href.split("#")[0], { width: 200, margin: 2 }).then(setQr).catch(() => setQr(""))
   }, [link])
 
+  const network = resolveNetwork(link?.network)
+
   const pay = async () => {
-    if (!link || !publicKey || publicKey.toBase58() === link.recipient) return
+    if (!link || !address || addrKey(address) === addrKey(link.recipient)) return
     setPhase("wallet")
     setTxError("")
     try {
-      const tx = await buildSolTransfer(connection, publicKey, new PublicKey(link.recipient), link.amount, [new PublicKey(link.reference)])
-      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized")
-      tx.recentBlockhash = blockhash
-      const sig = await sendTransaction(tx, connection)
-      setSentSig(sig)
+      const chainId = network.id
+      if (walletChainId !== chainId) await switchChain(wagmiConfig, { chainId })
+      const wallet = await getWalletClient(wagmiConfig, { chainId, account: address })
+      const client = getPublicClient(network)
+      // A plain USDC transfer whose calldata is this link's reference, so the
+      // server can tie the payment to the link on-chain.
+      const tx = buildNativeTransfer(link.recipient, link.amount, link.reference)
+      const hash = await wallet.sendTransaction({
+        account: address,
+        chain: network.chain,
+        to: tx.to,
+        value: BigInt(tx.value!),
+        data: tx.data,
+        ...(await estimateArcFees(client)),
+      })
+      setSentHash(hash)
       setPhase("confirming")
-      const res = await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed")
-      if (res.value.err) throw new Error("The transaction failed on-chain.")
-      // Let the server verify it and mark the link paid (retry briefly for RPC lag).
+      const receipt = await client.waitForTransactionReceipt({ hash, timeout: 90_000 })
+      if (receipt.status !== "success") throw new Error("The transaction failed on-chain.")
+      // Ask the server to verify it on-chain and mark the link paid (retry briefly for RPC lag).
       for (let i = 0; i < 4; i++) {
-        await new Promise((r) => setTimeout(r, i === 0 ? 1000 : 4500))
-        await load()
+        const r = await fetch(`/api/payment-links/${encodeURIComponent(link.id)}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ hash }),
+        })
+        const j = await r.json().catch(() => ({}))
+        if (j.link) setLink(j.link)
+        if (j.matched || j.link?.status === "paid") break
+        await new Promise((res) => setTimeout(res, 2500))
       }
       setPhase("idle")
-    } catch (e: any) {
-      setTxError((e?.message || "Payment failed").slice(0, 160))
+    } catch (e) {
+      setTxError(friendlyError(e, network))
       setPhase("error")
     }
   }
@@ -124,19 +146,28 @@ export default function PayPage() {
   }
 
   // The creator can't pay their own link (the server also ignores such payments).
-  const isOwnLink = publicKey?.toBase58() === link.recipient
+  const isOwnLink = Boolean(address && addrKey(address) === addrKey(link.recipient))
   const busy = phase === "wallet" || phase === "confirming"
+  const wrongChain = isConnected && walletChainId !== network.id
 
   return (
     <Shell>
       <div className="text-center">
         <h1 className="text-3xl font-bold mb-1">Payment request</h1>
-        <p className="text-gray-600 dark:text-gray-400 text-sm">Solana {CLUSTER_LABEL}</p>
+        <p className="inline-flex items-center gap-1.5 text-gray-600 dark:text-gray-400 text-sm">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/chain/arc.png" alt="" className="h-4 w-4 rounded-full" /> {network.name}
+          {!network.isTestnet && <span className="text-xs">(real USDC)</span>}
+        </p>
       </div>
 
       <Card className="p-6 border-gray-300 dark:border-gray-800 space-y-4">
         <div className="text-center">
-          <div className="text-4xl font-bold">{link.amount} <span className="text-2xl text-gray-500">{link.token}</span></div>
+          <div className="text-4xl font-bold inline-flex items-center gap-2">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/usdc.png" alt="" className="h-8 w-8" />
+            {link.amount} <span className="text-2xl text-gray-500">{link.token}</span>
+          </div>
           {link.description && <p className="mt-2 text-gray-600 dark:text-gray-300">{link.description}</p>}
         </div>
         <div className="flex items-start justify-between gap-3 text-sm">
@@ -173,18 +204,9 @@ export default function PayPage() {
 
       {link.status === "open" && (
         <>
-          {qr && (
+          {!isConnected ? (
             <Card className="p-6 border-gray-300 dark:border-gray-800 text-center">
-              <h2 className="font-semibold mb-1">Scan with a Solana wallet</h2>
-              <p className="text-xs text-gray-500 mb-3">This page updates automatically once the payment lands.</p>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={qr} alt={`Solana Pay QR code for ${link.amount} ${link.token}`} className="mx-auto rounded-lg bg-white" width={200} height={200} />
-            </Card>
-          )}
-
-          {!connected ? (
-            <Card className="p-6 border-gray-300 dark:border-gray-800 text-center">
-              <h2 className="font-semibold mb-3">Or connect a wallet to pay here</h2>
+              <h2 className="font-semibold mb-3">Connect a wallet to pay</h2>
               <div className="flex justify-center"><CustomConnectButton /></div>
             </Card>
           ) : isOwnLink ? (
@@ -197,18 +219,33 @@ export default function PayPage() {
               className="w-full flex items-center justify-center gap-2 rounded-lg bg-gray-900 dark:bg-white text-white dark:text-black py-4 text-lg font-semibold hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-70"
             >
               {busy && <Loader2 className="h-5 w-5 animate-spin" />}
-              {phase === "wallet" ? "Confirm in your wallet…" : phase === "confirming" ? "Confirming payment…" : `Pay ${link.amount} ${link.token}`}
+              {phase === "wallet" ? "Confirm in your wallet…" : phase === "confirming" ? "Confirming payment…" : wrongChain ? `Switch to ${network.name} & pay` : `Pay ${link.amount} ${link.token}`}
             </button>
           )}
 
           {phase === "error" && (
             <p className="text-sm text-red-600 dark:text-red-400 text-center" role="alert">{txError}</p>
           )}
-          {sentSig && link.status === "open" && phase !== "error" && (
+          {sentHash && link.status === "open" && phase !== "error" && (
             <p className="text-xs text-center text-gray-500">
-              Sent — <a className="underline" href={explorerTx(sentSig)} target="_blank" rel="noreferrer">view transaction</a>. Waiting for confirmation…
+              Sent. <a className="underline" href={explorerTx(network, sentHash)} target="_blank" rel="noreferrer">View transaction</a>. Waiting for confirmation…
             </p>
           )}
+
+          {qr && (
+            <Card className="p-6 border-gray-300 dark:border-gray-800 text-center">
+              <h2 className="font-semibold mb-1">Paying from your phone?</h2>
+              <p className="text-xs text-gray-500 mb-3">Scan to open this page in your mobile wallet&apos;s browser. It updates automatically once the payment lands.</p>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={qr} alt="QR code that opens this payment page" className="mx-auto rounded-lg bg-white" width={200} height={200} />
+            </Card>
+          )}
+          <p className="text-center text-xs text-gray-500">
+            Network fees on Arc are paid in USDC and cost a fraction of a cent.
+            {network.faucetUrl && (
+              <> Need test USDC? <a className="underline" href={network.faucetUrl} target="_blank" rel="noreferrer">Circle faucet</a>.</>
+            )}
+          </p>
         </>
       )}
     </Shell>

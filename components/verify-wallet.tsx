@@ -29,7 +29,7 @@ export function VerifyWalletPrompt({ onVerified, className, compact }: { onVerif
         {verifying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
         {verifying ? (auto ? "Verifying…" : "Check your wallet…") : "Verify wallet"}
       </button>
-      {!canVerify && <p className="mt-2 text-xs text-gray-500">{auto ? "Load a valid secret key first." : "Connect a wallet that supports message signing (e.g. Phantom, Solflare)."}</p>}
+      {!canVerify && <p className="mt-2 text-xs text-gray-500">{auto ? "Load a valid private key first." : "Connect your wallet (e.g. MetaMask, Rabby, Coinbase Wallet) first."}</p>}
       {error && <p className="mt-2 text-xs text-red-600 dark:text-red-400" role="alert">{error}</p>}
     </div>
   )

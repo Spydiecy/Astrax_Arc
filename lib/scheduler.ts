@@ -8,9 +8,8 @@
 // Every job is claimed in the database before it's sent, so no matter how many of
 // these fire at once, each payment goes out exactly once.
 import "server-only"
-import { PublicKey, sendAndConfirmTransaction } from "@solana/web3.js"
-import { getConnection, findToken, NATIVE_SENTINEL, isNativeToken } from "./solana"
-import { keypairFromSecret, getMintInfo, buildSolTransfer, buildTokenTransfer } from "./spl"
+import { getPublicClient, isNativeToken, resolveNetwork } from "./arc"
+import { accountFromSecret, buildNativeTransfer, buildTokenTransfer, makeWalletClient, resolveToken, sendPrepared } from "./evm"
 import { getDueSchedules, claimSchedule, failStaleClaims, updateAfterRun, clearKey, rateLimited } from "./db"
 import { decryptSecret } from "./crypto"
 
@@ -31,7 +30,6 @@ export async function runDueSchedules(): Promise<RunResult> {
   const interrupted = await failStaleClaims(now)
   const due = await getDueSchedules(now)
   const results: RunResult["results"] = []
-  const connection = getConnection()
 
   for (const job of due) {
     if (!(await claimSchedule(job.id, now, LEASE_MS))) continue // another run has it
@@ -40,20 +38,20 @@ export async function runDueSchedules(): Promise<RunResult> {
         await updateAfterRun(job.id, { status: "failed", note: "missing key", locked_until: 0 })
         continue
       }
-      const keypair = keypairFromSecret(decryptSecret(job.enc_key))
-      const recipient = new PublicKey(job.recipient)
+      const network = resolveNetwork(job.network)
+      const client = getPublicClient(network)
+      const account = accountFromSecret(decryptSecret(job.enc_key))
+      if (account.address.toLowerCase() !== job.owner.toLowerCase()) throw new Error("stored key doesn't match the owner")
 
-      let sig: string
+      let tx
       if (isNativeToken(job.token)) {
-        const tx = await buildSolTransfer(connection, keypair.publicKey, recipient, job.amount)
-        sig = await sendAndConfirmTransaction(connection, tx, [keypair])
+        tx = buildNativeTransfer(job.recipient, job.amount)
       } else {
-        const info = findToken(job.token)
-        const mint = new PublicKey(info?.address && info.address !== NATIVE_SENTINEL ? info.address : job.token)
-        const { programId, decimals } = await getMintInfo(connection, mint)
-        const tx = await buildTokenTransfer(connection, keypair.publicKey, recipient, mint, job.amount, decimals, programId)
-        sig = await sendAndConfirmTransaction(connection, tx, [keypair])
+        const token = await resolveToken(network, client, job.token)
+        if ("error" in token) throw new Error(token.error)
+        tx = buildTokenTransfer(token, job.recipient, job.amount)
       }
+      const { hash: sig } = await sendPrepared(makeWalletClient(network, account), client, tx)
 
       const remaining = job.remaining - 1
       if (job.interval_secs > 0 && remaining > 0) {

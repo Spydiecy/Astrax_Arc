@@ -13,42 +13,43 @@ import { TechStack } from '@/components/blocks/tech-stack'
 import { PromptMarquee } from '@/components/blocks/prompt-marquee'
 
 const FEATURES: { icon: LucideIcon; title: string; body: string }[] = [
-    { icon: Send, title: 'Chat to act on-chain', body: 'Send SOL or any SPL token, and create tokens and 1-of-1 NFTs with on-chain names and metadata. Pay saved contacts by name.' },
+    { icon: Send, title: 'Chat to act on-chain', body: 'Send USDC, EURC or any ERC-20, and deploy your own ERC-20 tokens and 1-of-1 NFTs in one message. Pay saved contacts by name.' },
     { icon: CalendarClock, title: 'Scheduled payments', body: 'One-off or recurring transfers, like a weekly allowance or a monthly salary, sent automatically, even after you close the app.' },
-    { icon: Link2, title: 'Payment links that track themselves', body: 'Share a link or Solana Pay QR code. Astrax spots the payment on-chain and marks the link paid, with the transaction.' },
-    { icon: ShieldCheck, title: 'Explain anything', body: 'Paste a transaction, wallet, token or program and get a plain-English breakdown with risk flags before you trust it.' },
-    { icon: Wallet, title: 'Your keys, your choice', body: 'Approve every transaction in your own wallet, or go hands-free with a devnet key. Your contacts, links and schedules are only visible to your wallet.' },
-    { icon: LineChart, title: 'Prices, charts and diagrams', body: 'Live SOL market data, candlestick charts, and Mermaid diagrams of any flow. Chats stay private in your browser.' },
+    { icon: Link2, title: 'Payment links that track themselves', body: 'Share a link or QR code. Astrax spots the USDC payment on-chain and marks the link paid, with the transaction.' },
+    { icon: ShieldCheck, title: 'Explain anything', body: 'Paste a transaction, wallet, token or contract and get a plain-English breakdown with risk flags before you trust it.' },
+    { icon: Wallet, title: 'Your keys, your choice', body: 'Approve every transaction in your own EVM wallet, or go hands-free with a dedicated key. Your contacts, links and schedules are only visible to your wallet.' },
+    { icon: LineChart, title: 'Prices, charts and diagrams', body: 'Live USDC, EURC, ETH and BTC market data, candlestick charts, and Mermaid diagrams of any flow. Chats stay private in your browser.' },
 ]
 
 const STACK_NOTES: { title: string; body: string }[] = [
     { title: 'Interface', body: 'Next.js 15 and React 19, with chat history kept only in your browser.' },
     { title: 'AI agent', body: 'Vercel AI SDK streaming Mistral ministral-8b, calling typed tools for every action.' },
-    { title: 'Wallets', body: 'Solana Wallet Adapter for Phantom, Solflare, Backpack and any Wallet Standard wallet. Ownership is proven with a free signed message.' },
-    { title: 'Chain', body: '@solana/web3.js with SPL Token and Token-2022. Payment links use Solana Pay references.' },
+    { title: 'Wallets', body: 'RainbowKit and wagmi for MetaMask, Rabby, Coinbase Wallet, WalletConnect and any injected EVM wallet. Ownership is proven with a free EIP-191 signed message.' },
+    { title: 'Chain', body: 'viem on Arc Mainnet and Arc Testnet, with USDC as gas. Astrax ERC-20 and ERC-721 contracts are compiled with solc and deployed from chat.' },
     { title: 'Storage', body: 'libSQL locally or Turso when hosted, one row per wallet. Files and NFT metadata on IPFS via Pinata.' },
 ]
 
 const PLAN_ITEMS = [
     'AI chat with copy, edit and regenerate',
-    'SOL & SPL token transfers',
-    'Token & NFT creation',
+    'USDC, EURC & ERC-20 transfers',
+    'ERC-20 token & NFT creation',
     'Scheduled & recurring payments',
     'Tracked payment links with QR codes',
     'Per-wallet contacts',
     'Explain any transaction or address',
     'Market data, charts and diagrams',
+    'Arc Mainnet & Testnet switcher',
 ]
 
 const EXAMPLES: { icon: LucideIcon; text: string }[] = [
-    { icon: Wallet, text: "What's my SOL balance?" },
-    { icon: Send, text: 'Send 0.5 SOL to alice' },
+    { icon: Wallet, text: "What's my USDC balance?" },
+    { icon: Send, text: 'Send 5 USDC to alice' },
     { icon: Rocket, text: 'Create a token MoonCoin MOON supply 1000000' },
-    { icon: Link2, text: 'Payment link for 2 SOL for logo design' },
-    { icon: CalendarClock, text: 'Pay bob 1 SOL every week, 4 times' },
+    { icon: Link2, text: 'Payment link for 50 USDC for logo design' },
+    { icon: CalendarClock, text: 'Pay bob 10 USDC every week, 4 times' },
     { icon: ShieldCheck, text: 'Is this address safe? <address>' },
     { icon: BookUser, text: 'Save alice as <address>' },
-    { icon: LineChart, text: 'Show the SOL price chart for 30 days' },
+    { icon: LineChart, text: 'Show the ETH price chart for 30 days' },
     { icon: Coins, text: 'Create an NFT called Genesis with this image' },
     { icon: Boxes, text: 'Show the latest blocks' },
 ]
@@ -128,7 +129,11 @@ export function HeroSection() {
                                     <Link
                                         href="#features"
                                         className="hover:bg-background dark:hover:border-t-border bg-muted group mx-auto flex w-fit items-center gap-4 rounded-full border p-1 pl-4 shadow-md shadow-black/5 transition-all duration-300 dark:border-t-white/5 dark:shadow-zinc-950">
-                                        <span className="text-foreground text-sm">New: tracked payment links & per-wallet contacts</span>
+                                        <span className="text-foreground text-sm inline-flex items-center gap-1.5">
+                                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                                            <img src="/chain/arc.png" alt="" className="h-4 w-4 rounded-full" />
+                                            Now live on Arc Mainnet and Testnet
+                                        </span>
                                         <span className="dark:border-background block h-4 w-0.5 border-l bg-white dark:bg-zinc-700"></span>
 
                                         <div className="bg-background group-hover:bg-muted size-6 overflow-hidden rounded-full duration-500">
@@ -145,11 +150,11 @@ export function HeroSection() {
                         
                                     <h1
                                         className="mt-8 max-w-4xl mx-auto text-balance text-6xl md:text-7xl lg:mt-16 xl:text-[5.25rem]">
-                                        <span className="text-red-400">Astrax</span> AI Agent for Solana
+                                        <span className="text-red-400">Astrax</span> AI Agent for Arc
                                     </h1>
                                     <p
                                         className="mx-auto mt-8 max-w-2xl text-balance text-lg">
-                                        Send SOL, create tokens and NFTs, schedule payments and share payment links that track themselves, all by chatting. Approve every step in your own wallet.
+                                        Send USDC, create tokens and NFTs, schedule payments and share payment links that track themselves on Arc Mainnet and Testnet, all by chatting. Approve every step in your own wallet.
                                     </p>
                                 </AnimatedGroup>
 
@@ -213,14 +218,14 @@ export function HeroSection() {
                                     <img
                                         className="bg-background aspect-15/8 relative hidden rounded-2xl dark:block"
                                         src="/hero.png"
-                                        alt="Astrax chat with a balance card, a SOL price chart and a payment link"
+                                        alt="Astrax chat on Arc with a balance card, a price chart and a payment link"
                                         width="2700"
                                         height="1440"
                                     />
                                     <img
                                         className="z-2 border-border/25 aspect-15/8 relative rounded-2xl border dark:hidden"
                                         src="/hero.png"
-                                        alt="Astrax chat with a balance card, a SOL price chart and a payment link"
+                                        alt="Astrax chat on Arc with a balance card, a price chart and a payment link"
                                         width="2700"
                                         height="1440"
                                     />
@@ -285,7 +290,7 @@ export function HeroSection() {
                         <div className="mb-16 text-center">
                             <h2 className="mb-4 text-4xl font-bold md:text-5xl">Simple, Transparent Pricing</h2>
                             <p className="mx-auto max-w-2xl text-muted-foreground">
-                                Free while in beta on Solana devnet. You only pay network fees, in devnet SOL.
+                                Free while in beta. You only pay Arc network fees, in USDC, usually a fraction of a cent.
                             </p>
                         </div>
 
@@ -296,12 +301,12 @@ export function HeroSection() {
                                 </div>
 
                                 <div className="mb-6">
-                                    <h3 className="mb-2 text-xl font-medium">Devnet Access</h3>
+                                    <h3 className="mb-2 text-xl font-medium">Arc Mainnet + Testnet</h3>
                                     <div className="mb-2 flex items-baseline">
                                         <span className="text-4xl font-bold">Free</span>
                                         <span className="text-muted-foreground ml-2">during beta</span>
                                     </div>
-                                    <p className="text-muted-foreground">Everything below, on Solana devnet</p>
+                                    <p className="text-muted-foreground">Everything below, on both Arc networks</p>
                                 </div>
 
                                 <ul className="mb-8 space-y-3 text-sm">
@@ -322,7 +327,7 @@ export function HeroSection() {
                         </div>
 
                         <div className="mt-12 text-center">
-                            <p className="text-muted-foreground text-sm">Mainnet plans will come later.</p>
+                            <p className="text-muted-foreground text-sm">New to Arc? Try it on Testnet with free USDC from the <a className="underline" href="https://faucet.circle.com" target="_blank" rel="noreferrer">Circle faucet</a>.</p>
                         </div>
                     </div>
                 </section>
@@ -354,7 +359,7 @@ export function HeroSection() {
                             <div className="md:col-span-3">
                                 <Logo className="mb-4" />
                                 <p className="mb-4 max-w-sm text-muted-foreground">
-                                    Your AI agent for Solana. Chat in plain English, act on-chain.
+                                    Your AI agent for Arc. Chat in plain English, act on-chain.
                                 </p>
                             </div>
 
@@ -373,7 +378,7 @@ export function HeroSection() {
 
                         <div className="mt-10 border-t pt-6">
                             <p className="text-center text-xs text-muted-foreground">
-                                © {new Date().getFullYear()} Astrax. Built for Solana with ❤️ · Beta on devnet
+                                © {new Date().getFullYear()} Astrax. Built for Arc with ❤️ · Live on Arc Mainnet and Testnet
                             </p>
                         </div>
                     </div>

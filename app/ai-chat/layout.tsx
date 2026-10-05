@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react"
 import { DashboardSidebar } from "@/components/dashboard/sidebar"
 import { CustomConnectButton } from "@/components/ui/connect-wallet-button"
+import { NetworkSwitcher, WalletNetworkBanner } from "@/components/ui/network-switcher"
 import { ThemeToggle } from "@/components/ui/theme-provider"
 import { HelpCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -42,10 +43,12 @@ export default function AiChatLayout({
 
           <div className="flex items-center space-x-3">
             <ThemeToggle />
+            <NetworkSwitcher />
             <CustomConnectButton />
           </div>
         </header>
 
+        <WalletNetworkBanner />
         {/* Chat Content */}
         <main className="flex-1 overflow-hidden">{children}</main>
       </div>

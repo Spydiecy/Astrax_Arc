@@ -2,35 +2,46 @@ import { streamText, tool } from "ai"
 import { createMistral } from "@ai-sdk/mistral"
 import { createGoogleGenerativeAI } from "@ai-sdk/google"
 import { z } from "zod"
-import { PublicKey, sendAndConfirmTransaction, LAMPORTS_PER_SOL } from "@solana/web3.js"
-import { getAssociatedTokenAddressSync, getAccount } from "@solana/spl-token"
 import {
-  getConnection,
-  getBlockSummary,
-  MAX_TX_VERSION,
   NATIVE_SYMBOL,
-  EXPLORER_URL,
-  CLUSTER,
+  USDC_ADDRESS,
   explorerTx,
   explorerAddress,
-  SOLANA_TOKENS,
-  NATIVE_SENTINEL,
+  explorerToken,
   findToken,
+  getPublicClient,
   isNativeToken,
+  isSendableAddress,
+  isTxHash,
   isValidAddress,
-} from "@/lib/solana"
+  normalizeAddress,
+  addrKey,
+  resolveNetwork,
+} from "@/lib/arc"
 import {
-  keypairFromSecret,
-  getMintInfo,
-  buildSolTransfer,
+  ERC20_ABI,
+  MAX_DECIMALS,
+  accountFromSecret,
+  buildDeployNFT,
+  buildDeployToken,
+  buildMint,
+  buildNativeTransfer,
   buildTokenTransfer,
-  buildCreateToken,
-  buildMintTo,
-  serializeTx,
-} from "@/lib/spl"
+  deployPrepared,
+  formatAmount,
+  formatFixed,
+  friendlyError,
+  makeWalletClient,
+  resolveToken,
+  sendPrepared,
+  toBaseUnits,
+  type PreparedTx,
+  type ResolvedToken,
+} from "@/lib/evm"
 import { spotPriceUSD, dailyCandles, indicativeCandles } from "@/lib/prices"
 import { uploadJSONToIPFS, isPinataConfigured } from "@/lib/pinata"
 import { explainTarget } from "@/lib/explain"
+import { recentActivity } from "@/lib/activity"
 import {
   insertSchedule,
   listSchedulesByOwner,
@@ -55,7 +66,6 @@ import { encryptSecret } from "@/lib/crypto"
 export const runtime = "nodejs"
 export const maxDuration = 60
 
-
 // ── Model selection: Mistral first, Google Gemini as fallback ───────────────────
 function getModel() {
   if (process.env.MISTRAL_API_KEY) {
@@ -70,13 +80,11 @@ function getModel() {
   return null
 }
 
-const connection = getConnection()
-
 function makeWallet(secretKey?: string) {
   if (!secretKey) return null
   try {
-    const keypair = keypairFromSecret(secretKey)
-    return { keypair, publicKey: keypair.publicKey.toBase58() }
+    const account = accountFromSecret(secretKey)
+    return { account, address: account.address }
   } catch {
     return null
   }
@@ -87,11 +95,6 @@ function parseEvery(every?: string): number {
   if (!every) return 0
   const s = every.trim().toLowerCase()
   if (/(^|\b)(once|one[-\s]?time|no)\b/.test(s)) return 0
-  if (s.includes("hour")) return 3600
-  if (s.includes("day") || s.includes("daily")) return 86400
-  if (s.includes("week")) return 604800
-  if (s.includes("month")) return 2592000 // ~30 days
-  if (s.includes("year")) return 31536000
   const m = s.match(/(\d+)\s*(second|minute|hour|day|week|month)/)
   if (m) {
     const n = parseInt(m[1], 10)
@@ -99,12 +102,18 @@ function parseEvery(every?: string): number {
     const base = unit === "second" ? 1 : unit === "minute" ? 60 : unit === "hour" ? 3600 : unit === "day" ? 86400 : unit === "week" ? 604800 : 2592000
     return n * base
   }
+  if (s.includes("hour")) return 3600
+  if (s.includes("day") || s.includes("daily")) return 86400
+  if (s.includes("week")) return 604800
+  if (s.includes("month")) return 2592000 // ~30 days
+  if (s.includes("year")) return 31536000
   return 0
 }
 
 function parseWhen(when: string): Date | null {
   const now = new Date()
   const s = when.trim().toLowerCase()
+  if (/^(now|right now|immediately|asap)$/.test(s)) return new Date(now.getTime() + 30_000)
   const rel = s.match(/in\s+(\d+)\s*(min|minute|minutes|hour|hours|hr|hrs|day|days|week|weeks)/)
   if (rel) {
     const n = parseInt(rel[1], 10)
@@ -133,77 +142,72 @@ function parseWhen(when: string): Date | null {
   return isNaN(parsed.getTime()) ? null : parsed
 }
 
-async function nativeUsdPrice(): Promise<number | null> {
-  const spot = await spotPriceUSD("SOL")
+// CoinGecko ids for the assets Astrax knows about on Arc.
+const COINGECKO_IDS: Record<string, string> = {
+  USDC: "usd-coin",
+  EURC: "euro-coin",
+  WETH: "ethereum",
+  ETH: "ethereum",
+  CIRBTC: "bitcoin",
+  BTC: "bitcoin",
+}
+
+async function usdPrice(symbol: string): Promise<number | null> {
+  const spot = await spotPriceUSD(symbol)
   if (spot != null) return spot
+  const id = COINGECKO_IDS[symbol.toUpperCase()]
+  if (!id) return null
   try {
-    const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd", {
-      headers: { accept: "application/json" },
-    })
+    const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`, { headers: { accept: "application/json" } })
     if (!res.ok) return null
     const j = await res.json()
-    return j?.solana?.usd ?? null
+    return j?.[id]?.usd ?? null
   } catch {
     return null
   }
 }
 
-const SYSTEM_PROMPT = `You are **Astrax**, the AI agent built into the Astrax dApp — a natural-language command center for **Solana** (cluster: ${CLUSTER}, native token **${NATIVE_SYMBOL}**, explorer ${EXPLORER_URL}).
+const amountRe = /^\d+(\.\d+)?$/
+
+function systemPrompt(networkName: string, isTestnet: boolean, explorer: string): string {
+  return `You are **Astrax**, the AI agent built into the Astrax dApp: a natural-language command center for **Arc**, Circle's EVM-compatible Layer-1 where **USDC is the native gas token**. Current network: **${networkName}** (${isTestnet ? "testnet, free test USDC" : "MAINNET, real funds"}), explorer ${explorer}.
 
 ## Personality
-You talk only about Astrax, the Solana blockchain, and crypto operations. If asked about something unrelated, give a short warm redirect back to what Astrax can do.
+You talk only about Astrax, the Arc blockchain, and crypto operations. If asked about something unrelated, give a short warm redirect back to what Astrax can do.
 
-## CRITICAL BEHAVIOR — act, don't explain
+## CRITICAL BEHAVIOR: act, don't explain
 When the user asks for an on-chain action, call the matching tool immediately, then summarise the result in one or two short sentences. The UI renders a rich card (and, in wallet mode, a one-click confirm button) from the tool result, so keep your text brief.
 
 Guidance:
-- balance → getBalance ; token balance → getTokenBalance
-- "send 1 ${NATIVE_SYMBOL} to <address>/alice" → sendPayment (token defaults to native ${NATIVE_SYMBOL})
-- "look up tx <signature>" → getTransaction ; "latest blocks" → getLatestBlocks ; "block 123" → getBlock
-- "list tokens" → listTokens ; "price/market" → getMarketData ; "activity for <address>" → getAddressActivity
-- "what is this <address/signature> / is this safe / what does this program do / explain this tx" → explain
-- "price chart / candlestick / chart for ${NATIVE_SYMBOL}" → getPriceChart
+- balance → getBalance ; token balance (EURC, WETH, any 0x token) → getTokenBalance
+- "send 1 USDC to <address>/alice" → sendPayment (token defaults to native ${NATIVE_SYMBOL})
+- "look up tx <hash>" → getTransaction ; "latest blocks" → getLatestBlocks ; "block 123" → getBlock
+- "list tokens" → listTokens ; "price/market for X" → getMarketData ; "activity for <address>" → getAddressActivity
+- "what is this <address/hash> / is this safe / what does this contract do / explain this tx" → explain
+- "price chart / candlestick for ETH, BTC, EURC" → getPriceChart
 - "diagram / workflow / flowchart / visualize this" → generateDiagram (YOU write the Mermaid code)
 - "generate an image of … / draw …" → generateImage
 - When the user attaches a file you'll see its IPFS URL in the message. If they're creating an NFT, pass that URL as the deployNFT "image" argument; otherwise save it with storeAsset. NFT images are optional.
-- "create token MoonCoin MOON supply 1000000" → deployToken (creates an SPL token with on-chain name/symbol)
-- "create an NFT / mint an NFT" → deployNFT (a 1-of-1 SPL token with fixed supply)
-- "mint 500 more <mint>" → mintTokens (only works if the user is the mint authority)
-- Arbitrary smart-contract / program deployment is NOT supported from chat — say so briefly and offer token/NFT creation instead.
-- "schedule 2 ${NATIVE_SYMBOL} to alice tomorrow at 5pm" → scheduleTransfer (one-time)
-- "pay alice 500 ${NATIVE_SYMBOL} every month for a year / salary" → scheduleTransfer with every:"monthly", occurrences:12
+- "create token MoonCoin MOON supply 1000000" → deployToken (deploys an ERC-20 contract; the creator owns it and can mint more)
+- "create an NFT / mint an NFT" → deployNFT (deploys a 1-of-1 ERC-721)
+- "mint 500 more <token address>" → mintTokens (only works for Astrax tokens the user owns)
+- Arbitrary smart-contract deployment from source is NOT supported from chat: say so briefly and offer token/NFT creation instead.
+- "schedule 2 USDC to alice tomorrow at 5pm" → scheduleTransfer (one-time)
+- "pay alice 500 USDC every month for a year / salary" → scheduleTransfer with every:"monthly", occurrences:12
 - "show my scheduled payments" → listSchedules ; "cancel schedule <id>" → cancelSchedule
-- "payment link for 0.5 ${NATIVE_SYMBOL}" → createPaymentLink ; "my payment links / has my link been paid" → listPaymentLinks
+- "payment link for 5 USDC" → createPaymentLink ; "my payment links / has my link been paid" → listPaymentLinks
 - "save alice as <address>" → saveContact ; "who is alice" → resolveContact ; "my contacts" → listContacts ; "remove alice" → deleteContact
-- Recipients can be a contact name ("send 1 SOL to alice") — pass the name itself as the recipient.
+- Recipients can be a contact name ("send 1 USDC to alice"): pass the name itself as the recipient.
 - "store asset <link>" → storeAsset ; "my assets" → listAssets
+- Network fees on Arc are paid in USDC (a fraction of a cent). The user switches between Arc Mainnet and Arc Testnet with the network switcher in the top bar; you can't switch it for them.
 
 ## Formatting
-- **bold** for key terms, backticks for addresses/signatures. Keep it to one or two sentences. Never invent signatures, addresses, or balances — only report tool output.
+- **bold** for key terms, backticks for addresses/hashes. Keep it to one or two sentences. Never invent hashes, addresses, or balances: only report tool output.
 - Do NOT add notes, footnotes, caveats, unit conversions or mentions of pages/features that aren't in the tool result.
 - If a tool returns an error, repeat its reason in your own short sentence. Never guess at other causes, amounts or commands.
-- Never retype full addresses, mints, signatures or URLs/links in your text — the card below shows them exactly. Say "the recipient", "the link below", a contact name, or the token symbol instead.
-- Don't restate what the card already lists (each item's amount, status, date, link). Give a one-sentence summary instead, e.g. "You have 1 payment link — it's been paid."
-- Plain markdown only — never output HTML or JSX-style tags.`
-
-// Turn raw web3.js / RPC errors into a plain, accurate reason so the model
-// doesn't have to guess (it otherwise invents causes).
-function friendlyError(e: any): string {
-  const msg = String(e?.message || e || "unknown error")
-  const logs = Array.isArray(e?.logs) ? e.logs.join(" ") : ""
-  const all = `${msg} ${logs}`
-  if (/no record of a prior credit|AccountNotFound/i.test(all))
-    return `Your signing wallet has no SOL on ${CLUSTER} yet, so it can't pay the amount or the network fee. Fund it first${CLUSTER === "devnet" ? " (for example from faucet.solana.com)" : ""}.`
-  if (/insufficient lamports|insufficient funds for rent|InsufficientFundsForRent/i.test(all))
-    return "Not enough SOL in your signing wallet to cover the amount plus fees."
-  if (/insufficient funds/i.test(all) || /custom program error: 0x1\b/i.test(all))
-    return "Not enough tokens in your signing wallet for this transfer."
-  if (/owner does not match|custom program error: 0x4\b/i.test(all))
-    return "Your wallet isn't the authority for this token, so it can't do that."
-  if (/Blockhash not found|block height exceeded|expired/i.test(all))
-    return "The network didn't confirm it in time. Nothing was sent; try again."
-  if (/429|Too Many Requests/i.test(all)) return "The Solana RPC is rate-limiting requests right now. Try again in a moment."
-  return msg.slice(0, 160)
+- Never retype full addresses, contract addresses, hashes or URLs/links in your text: the card below shows them exactly. Say "the recipient", "the link below", a contact name, or the token symbol instead.
+- Don't restate what the card already lists (each item's amount, status, date, link). Give a one-sentence summary instead, e.g. "You have 1 payment link and it's been paid."
+- Plain markdown only: never output HTML or JSX-style tags.`
 }
 
 // Only the ACTIVE signing mode is described, so the model never hedges between modes.
@@ -215,14 +219,14 @@ The user approves every transaction in their own wallet. Write tools (sendPaymen
 - For every other reply (balances, prices, blocks, explain, contacts, links, errors…) never mention buttons, confirming, wallets or connecting.
 - The app renders the button itself. Never write a button, tag, placeholder or any markup for it (no "<ConfirmButton>", no "[Confirm]").
 - Nothing is on-chain yet: never say it was sent, created or minted.
-- Do not mention autonomous mode, secret keys or signing setup unless a tool returned an error about it.
+- Do not mention autonomous mode, private keys or signing setup unless a tool returned an error about it.
 ${hasSigner ? "" : "- No wallet is connected. Only if a write tool returns a no-wallet error, tell them to connect their wallet in the top bar."}`
   }
   return `## Signing (current mode: AUTONOMOUS)
-Astrax signs and submits transactions immediately with the user's key. There is NO confirm button and no wallet popup.
-- After a write tool succeeds, report that it was done and give the signature from the tool result.
+Astrax signs and submits transactions immediately with the user's private key. There is NO confirm button and no wallet popup.
+- After a write tool succeeds, report that it was done; the card shows the transaction hash.
 - Never tell the user to click a button or confirm in a wallet. Do not mention wallet mode.
-${hasSigner ? "" : "- No secret key is loaded. Only if a write tool returns a no-key error, tell them to paste one in the sidebar **Signing** panel."}`
+${hasSigner ? "" : "- No private key is loaded. Only if a write tool returns a no-key error, tell them to paste one in the sidebar **Signing** panel."}`
 }
 
 export async function POST(req: Request) {
@@ -232,11 +236,13 @@ export async function POST(req: Request) {
   const origin = requestOrigin(req)
   const body = await req.json()
   const messages = body.messages ?? []
+  const network = resolveNetwork(body.network)
+  const client = getPublicClient(network)
   const signingMode: "auto" | "wallet" = body.signingMode === "auto" ? "auto" : "wallet"
   const credentials = body.credentials ?? {}
   const privateKey: string | undefined = credentials.privateKey || undefined
-  const walletAddress: string | undefined =
-    body.walletAddress && isValidAddress(body.walletAddress) ? body.walletAddress : undefined
+  const walletAddress: `0x${string}` | undefined =
+    typeof body.walletAddress === "string" && isValidAddress(body.walletAddress) ? normalizeAddress(body.walletAddress) : undefined
 
   const model = getModel()
   if (!model) {
@@ -247,67 +253,65 @@ export async function POST(req: Request) {
   }
 
   const wallet = signingMode === "auto" ? makeWallet(privateKey) : null
-  const ownerAddress = signingMode === "auto" ? wallet?.publicKey : walletAddress
+  const signer = wallet ? makeWalletClient(network, wallet.account) : null
+  const ownerAddress: `0x${string}` | undefined = signingMode === "auto" ? wallet?.address : walletAddress
   // `walletAddress` is only a claim from the browser. Owner-only data (schedules,
-  // payment links, assets) needs proof: the secret key itself (autonomous), or a
-  // verified wallet session cookie (wallet mode).
-  const verifiedOwner = signingMode === "auto" ? wallet?.publicKey : isOwner(req, walletAddress) ? walletAddress : undefined
+  // payment links, contacts, assets) needs proof: the private key itself
+  // (autonomous), or a verified wallet session cookie (wallet mode).
+  const verifiedAddress = signingMode === "auto" ? wallet?.address : isOwner(req, walletAddress) ? walletAddress : undefined
+  /** Lower-cased owner key used for every database row. */
+  const verifiedOwner = verifiedAddress ? addrKey(verifiedAddress) : undefined
   const needOwner = () => (ownerAddress ? NOT_OWNER : { error: "No wallet address available." })
 
-  // Guard for write tools: either a server wallet (auto) or a connected address (wallet).
+  // Guard for write tools: either a server signer (auto) or a connected address (wallet).
   const noSigner = () =>
     signingMode === "auto"
-      ? { error: "No secret key configured. Open the sidebar **Signing** panel, switch to **Autonomous**, and paste your secret key." }
+      ? { error: "No private key configured. Open the sidebar **Signing** panel, switch to **Autonomous**, and paste your private key." }
       : { error: "No wallet connected. Connect your wallet in the top bar (wallet signing mode) and try again." }
+
+  const fail = (prefix: string, e: unknown) => ({ error: `${prefix}: ${friendlyError(e, network)}` })
 
   // Resolve a recipient (address, or a name from THIS user's contacts) to an address.
   // Contact lookup needs a verified owner, so nobody can read someone else's contacts.
-  const resolveRecipient = async (to: string): Promise<{ address: string } | { error: string; needsAuth?: boolean }> => {
-    if (isValidAddress(to)) return { address: to }
+  const resolveRecipient = async (to: string): Promise<{ address: `0x${string}` } | { error: string; needsAuth?: boolean }> => {
+    const t = to.trim()
+    if (isValidAddress(t)) {
+      if (!isSendableAddress(t)) return { error: "Arc doesn't allow sending to the zero address." }
+      return { address: normalizeAddress(t) }
+    }
     if (!verifiedOwner) return ownerAddress ? NOT_OWNER : { error: `"${to}" isn't an address. Connect a wallet to use saved contacts.` }
-    const c = await getContact(verifiedOwner, to)
-    if (c && isValidAddress(c.address)) return { address: c.address }
+    const c = await getContact(verifiedOwner, t)
+    if (c && isSendableAddress(c.address)) return { address: normalizeAddress(c.address) }
     return { error: `No contact named "${cleanContactName(to)}". Give an address or save them as a contact first.` }
   }
 
-  // Resolve a token argument (symbol or mint address) to its mint, program and decimals.
-  type ResolvedToken = { mint: PublicKey; programId: PublicKey; decimals: number; symbol: string }
-  const resolveToken = async (token: string): Promise<ResolvedToken | { error: string }> => {
-    const info = findToken(token)
-    const mintStr = info?.address && info.address !== NATIVE_SENTINEL ? info.address : token
-    if (!isValidAddress(mintStr)) return { error: `Unknown token: ${token}` }
-    const mint = new PublicKey(mintStr)
-    try {
-      const { programId, decimals } = await getMintInfo(connection, mint)
-      return { mint, programId, decimals, symbol: info?.symbol ?? (mintStr === token ? `${token.slice(0, 4)}…` : token) }
-    } catch (e: any) {
-      return { error: `Could not read mint ${token}: ${e?.message || "not found"}.` }
-    }
-  }
+  /** A transaction prepared for the browser wallet (wallet mode). */
+  const walletAction = (fields: Record<string, unknown>) => ({ kind: "action", network: network.key, chainId: network.id, ...fields })
 
   const result = await streamText({
     model,
-    system: `${SYSTEM_PROMPT}\n\n${signingSection(signingMode, Boolean(ownerAddress))}`,
+    system: `${systemPrompt(network.name, network.isTestnet, network.explorerUrl)}\n\n${signingSection(signingMode, Boolean(ownerAddress))}`,
     messages,
     maxSteps: 6,
     tools: {
       // ── READ ──────────────────────────────────────────────────────────────
       getBalance: tool({
-        description: `Get the native ${NATIVE_SYMBOL} balance of an address. If no address is given, uses the user's own address.`,
+        description: `Get the native ${NATIVE_SYMBOL} (gas token) balance of an address on ${network.name}. If no address is given, uses the user's own address.`,
         parameters: z.object({ address: z.string().optional() }),
         execute: async ({ address }) => {
           try {
-            const target = address && isValidAddress(address) ? address : ownerAddress
-            if (!target || !isValidAddress(target)) return { error: "No valid address available." }
-            const lamports = await connection.getBalance(new PublicKey(target))
-            const balance = lamports / LAMPORTS_PER_SOL
-            const price = await nativeUsdPrice()
+            const target = address && isValidAddress(address) ? normalizeAddress(address) : ownerAddress
+            if (!target) return { error: "No valid address available." }
+            const wei = await client.getBalance({ address: target })
+            const price = await usdPrice(NATIVE_SYMBOL)
+            const amount = Number(formatAmount(wei, 18, 6))
             return {
               kind: "balance",
               address: target,
-              balance: balance.toFixed(4),
+              network: network.name,
+              balance: formatFixed(wei, 18, 4),
               symbol: NATIVE_SYMBOL,
-              usdValue: price ? (balance * price).toFixed(2) : undefined,
+              usdValue: price ? (amount * price).toFixed(2) : undefined,
             }
           } catch {
             return { error: "Failed to fetch balance." }
@@ -316,22 +320,21 @@ export async function POST(req: Request) {
       }),
 
       getTokenBalance: tool({
-        description: "Get an SPL token balance for an address. Accepts a token symbol (e.g. USDC) or mint address.",
+        description: "Get an ERC-20 token balance for an address. Accepts a token symbol (e.g. EURC, WETH, cirBTC, USYC) or a contract address.",
         parameters: z.object({ token: z.string(), address: z.string().optional() }),
         execute: async ({ token, address }) => {
           try {
-            const target = address && isValidAddress(address) ? address : ownerAddress
-            if (!target || !isValidAddress(target)) return { error: "No valid address available." }
-            const resolved = await resolveToken(token)
-            if ("error" in resolved) return resolved
-            const ata = getAssociatedTokenAddressSync(resolved.mint, new PublicKey(target), true, resolved.programId)
-            try {
-              const acc = await getAccount(connection, ata, "confirmed", resolved.programId)
-              const balance = Number(acc.amount) / 10 ** resolved.decimals
-              return { kind: "balance", address: target, balance: balance.toFixed(4), symbol: resolved.symbol }
-            } catch {
-              return { kind: "balance", address: target, balance: "0.0000", symbol: resolved.symbol }
+            const target = address && isValidAddress(address) ? normalizeAddress(address) : ownerAddress
+            if (!target) return { error: "No valid address available." }
+            if (isNativeToken(token)) {
+              // USDC's ERC-20 view truncates below 6 decimals; the native balance is exact.
+              const wei = await client.getBalance({ address: target })
+              return { kind: "balance", address: target, network: network.name, balance: formatFixed(wei, 18, 4), symbol: NATIVE_SYMBOL }
             }
+            const resolved = await resolveToken(network, client, token)
+            if ("error" in resolved) return resolved
+            const units = await client.readContract({ address: resolved.address, abi: ERC20_ABI, functionName: "balanceOf", args: [target] })
+            return { kind: "balance", address: target, network: network.name, balance: formatFixed(units, resolved.decimals, 4), symbol: resolved.symbol }
           } catch {
             return { error: "Failed to fetch token balance." }
           }
@@ -339,59 +342,49 @@ export async function POST(req: Request) {
       }),
 
       getTransaction: tool({
-        description: "Look up details of a transaction by its signature.",
+        description: "Look up details of a transaction by its hash (0x + 64 hex characters).",
         parameters: z.object({ hash: z.string() }),
         execute: async ({ hash }) => {
+          if (!isTxHash(hash.trim())) return { error: "That isn't a transaction hash (0x + 64 hex characters)." }
+          const h = hash.trim() as `0x${string}`
           try {
-            const tx = await connection.getParsedTransaction(hash, { maxSupportedTransactionVersion: MAX_TX_VERSION })
-            if (!tx) return { error: "Transaction not found." }
-            const keys = tx.transaction.message.accountKeys
-            const from = keys[0]?.pubkey.toBase58()
-            const to = keys[1]?.pubkey.toBase58()
-            const pre = tx.meta?.preBalances?.[0] ?? 0
-            const post = tx.meta?.postBalances?.[0] ?? 0
-            const feeLamports = tx.meta?.fee ?? 0
-            // SOL the fee payer spent beyond the network fee (transfers, rent, …).
-            const moved = Math.max(0, pre - post - feeLamports) / LAMPORTS_PER_SOL
+            const [tx, receipt] = await Promise.all([client.getTransaction({ hash: h }), client.getTransactionReceipt({ hash: h }).catch(() => null)])
             return {
               kind: "transaction",
-              hash,
-              from,
-              to,
-              value: `${moved.toFixed(6)} ${NATIVE_SYMBOL}`,
-              blockNumber: tx.slot?.toString() ?? "pending",
-              status: tx.meta?.err ? "Failed" : "Success",
-              fee: `${(feeLamports / LAMPORTS_PER_SOL).toFixed(6)} ${NATIVE_SYMBOL}`,
-              explorerUrl: explorerTx(hash),
+              hash: h,
+              from: tx.from,
+              to: tx.to ?? receipt?.contractAddress ?? "",
+              value: `${formatAmount(tx.value, 18, 6)} ${NATIVE_SYMBOL}`,
+              blockNumber: tx.blockNumber?.toString() ?? "pending",
+              status: receipt ? (receipt.status === "success" ? "Success" : "Failed") : "Pending",
+              fee: receipt ? `${formatAmount(receipt.gasUsed * receipt.effectiveGasPrice, 18, 6)} ${NATIVE_SYMBOL}` : undefined,
+              explorerUrl: explorerTx(network, h),
             }
           } catch {
-            return { error: "Transaction not found." }
+            return { error: `Transaction not found on ${network.name}.` }
           }
         },
       }),
 
       getLatestBlocks: tool({
-        description: "Get the most recent blocks (slots) on Solana.",
+        description: `Get the most recent blocks on ${network.name}.`,
         parameters: z.object({ count: z.number().int().min(1).max(5).optional() }),
         execute: async ({ count }) => {
           try {
             const n = count ?? 3
-            // Use the confirmed tip; the processed tip often isn't queryable yet.
-            const slot = await connection.getSlot("confirmed")
-            const blocks: any[] = []
-            for (let s = slot; blocks.length < n && s > slot - 20 && s >= 0; s--) {
-              const b = await getBlockSummary(s).catch(() => null) // null = skipped slot
-              if (b) {
-                blocks.push({
-                  blockNumber: s.toString(),
-                  hash: b.blockhash,
-                  timestamp: b.blockTime ? new Date(b.blockTime * 1000).toLocaleString() : "",
-                  transactionCount: b.transactionCount,
-                })
-              }
+            const latest = await client.getBlockNumber()
+            const nums = Array.from({ length: n }, (_, i) => latest - BigInt(i)).filter((b) => b >= 0n)
+            const blocks = await Promise.all(nums.map((blockNumber) => client.getBlock({ blockNumber })))
+            return {
+              kind: "blocks",
+              network: network.name,
+              blocks: blocks.map((b) => ({
+                blockNumber: b.number.toString(),
+                hash: b.hash,
+                timestamp: new Date(Number(b.timestamp) * 1000).toLocaleString(),
+                transactionCount: b.transactions.length,
+              })),
             }
-            if (blocks.length === 0) return { error: "Could not read recent blocks from the RPC." }
-            return { kind: "blocks", blocks }
           } catch {
             return { error: "Failed to fetch blocks." }
           }
@@ -399,96 +392,91 @@ export async function POST(req: Request) {
       }),
 
       getBlock: tool({
-        description: "Get a block by slot number.",
+        description: "Get a block by its number.",
         parameters: z.object({ block: z.string() }),
         execute: async ({ block }) => {
+          if (!/^\d+$/.test(block.trim())) return { error: "Give a numeric block number." }
           try {
-            const slot = parseInt(block, 10)
-            if (isNaN(slot)) return { error: "Give a numeric slot." }
-            const b = await getBlockSummary(slot)
-            if (!b) return { error: `No block at slot ${slot} (it may have been skipped or pruned).` }
+            const b = await client.getBlock({ blockNumber: BigInt(block.trim()) })
             return {
               kind: "block",
-              blockNumber: slot.toString(),
-              hash: b.blockhash,
-              timestamp: b.blockTime ? new Date(b.blockTime * 1000).toLocaleString() : "",
-              transactionCount: b.transactionCount,
-              parentSlot: b.parentSlot.toString(),
+              blockNumber: b.number.toString(),
+              hash: b.hash,
+              timestamp: new Date(Number(b.timestamp) * 1000).toLocaleString(),
+              transactionCount: b.transactions.length,
+              gasUsed: b.gasUsed.toString(),
+              explorerUrl: `${network.explorerUrl}/block/${b.number}`,
             }
           } catch {
-            return { error: "Block not found." }
+            return { error: `Block ${block} not found on ${network.name}.` }
           }
         },
       }),
 
       listTokens: tool({
-        description: "List the tokens supported/known on Solana.",
+        description: `List the tokens Astrax knows on ${network.name} (USDC, EURC, USYC, cirBTC, WETH).`,
         parameters: z.object({}),
-        execute: async () => ({ kind: "tokenList", tokens: SOLANA_TOKENS }),
+        execute: async () => ({ kind: "tokenList", network: network.key, tokens: network.tokens }),
       }),
 
       explain: tool({
         description:
-          "Explain / audit a transaction signature OR an address/program: decode what it does, label the account type, and flag risks. Use whenever the user pastes a signature or address, or asks 'what is this', 'is this safe', 'what does this do'.",
-        parameters: z.object({ target: z.string().describe("A transaction signature or an account address") }),
-        execute: async ({ target }) => {
-          return await explainTarget(target)
-        },
+          "Explain / audit a transaction hash OR an address/contract: decode what it does, label the account type, and flag risks. Use whenever the user pastes a hash or address, or asks 'what is this', 'is this safe', 'what does this do'.",
+        parameters: z.object({ target: z.string().describe("A transaction hash or an address") }),
+        execute: async ({ target }) => explainTarget(network, target),
       }),
 
       getMarketData: tool({
-        description: `Get market data (price, market cap, volume) for Solana / ${NATIVE_SYMBOL}.`,
-        parameters: z.object({}),
-        execute: async () => {
-          const price = await nativeUsdPrice()
+        description: "Get market data (price, market cap, volume, 24h change) for an asset. Defaults to USDC; also EURC, ETH (WETH) and BTC (cirBTC).",
+        parameters: z.object({ symbol: z.string().optional() }),
+        execute: async ({ symbol }) => {
+          const sym = (symbol || NATIVE_SYMBOL).trim().toUpperCase()
+          const id = COINGECKO_IDS[sym]
+          const price = await usdPrice(sym)
           let marketCap: number | null = null
           let volume24h: number | null = null
           let change24h: number | null = null
-          let name = "Solana"
-          try {
-            const res = await fetch(
-              "https://api.coingecko.com/api/v3/coins/solana?localization=false&tickers=false&community_data=false&developer_data=false",
-              { headers: { accept: "application/json" } },
-            )
-            if (res.ok) {
-              const j = await res.json()
-              name = j.name || name
-              marketCap = j.market_data?.market_cap?.usd ?? null
-              volume24h = j.market_data?.total_volume?.usd ?? null
-              change24h = j.market_data?.price_change_percentage_24h ?? null
+          let name = sym
+          if (id) {
+            try {
+              const res = await fetch(
+                `https://api.coingecko.com/api/v3/coins/${id}?localization=false&tickers=false&community_data=false&developer_data=false`,
+                { headers: { accept: "application/json" } },
+              )
+              if (res.ok) {
+                const j = await res.json()
+                name = j.name || name
+                marketCap = j.market_data?.market_cap?.usd ?? null
+                volume24h = j.market_data?.total_volume?.usd ?? null
+                change24h = j.market_data?.price_change_percentage_24h ?? null
+              }
+            } catch {
+              /* best-effort */
             }
-          } catch {
-            /* best-effort */
           }
-          if (price == null && marketCap == null) return { error: "Market data unavailable right now." }
-          return { kind: "market", name, symbol: NATIVE_SYMBOL, price, marketCap, volume24h, change24h }
+          if (price == null && marketCap == null) return { error: `Market data for ${sym} is unavailable right now.` }
+          return { kind: "market", name, symbol: sym, price, marketCap, volume24h, change24h }
         },
       }),
 
       getAddressActivity: tool({
-        description: "Get recent transactions for an address on Solana.",
+        description: `Get recent transactions for an address on ${network.name}.`,
         parameters: z.object({ address: z.string().optional() }),
         execute: async ({ address }) => {
-          const target = address && isValidAddress(address) ? address : ownerAddress
-          if (!target || !isValidAddress(target)) return { error: "No valid address available." }
+          const target = address && isValidAddress(address) ? normalizeAddress(address) : ownerAddress
+          if (!target) return { error: "No valid address available." }
           try {
-            const sigs = await connection.getSignaturesForAddress(new PublicKey(target), { limit: 8 })
-            const transactions = sigs.map((s) => ({
-              hash: s.signature,
-              from: target,
-              to: "",
-              value: "",
-              status: s.err ? "Failed" : "Success",
-              timestamp: s.blockTime ? new Date(s.blockTime * 1000).toLocaleString() : "",
-            }))
+            const { transactions, source } = await recentActivity(network, target, 8)
             return {
               kind: "activity",
+              network: network.key,
               address: target,
               transactions,
-              explorerUrl: explorerAddress(target),
+              note: transactions.length === 0 ? (source === "logs" ? "No USDC transfers in the last few hours." : "No transactions yet.") : undefined,
+              explorerUrl: explorerAddress(network, target),
             }
           } catch {
-            return { kind: "activity", address: target, transactions: [], note: "Could not load activity.", explorerUrl: explorerAddress(target) }
+            return { kind: "activity", network: network.key, address: target, transactions: [], note: "Could not load activity.", explorerUrl: explorerAddress(network, target) }
           }
         },
       }),
@@ -508,9 +496,9 @@ export async function POST(req: Request) {
         parameters: z.object({ name: z.string(), address: z.string() }),
         execute: async ({ name, address }) => {
           if (!verifiedOwner) return needOwner()
-          if (!isValidAddress(address)) return { error: "That is not a valid Solana address." }
+          if (!isSendableAddress(address)) return { error: "That is not a valid Arc address (0x followed by 40 hex characters)." }
           if (!cleanContactName(name)) return { error: "Give the contact a name." }
-          const c = await saveContact(verifiedOwner, name, address)
+          const c = await saveContact(verifiedOwner, name, normalizeAddress(address))
           return { kind: "contact", name: c.name, address: c.address, saved: true }
         },
       }),
@@ -536,90 +524,75 @@ export async function POST(req: Request) {
 
       // ── WRITE (auto = sign now; wallet = return a prepared transaction) ───────
       sendPayment: tool({
-        description: `Send ${NATIVE_SYMBOL} (native) or an SPL token to an address or saved contact.`,
+        description: `Send ${NATIVE_SYMBOL} (native gas token) or an ERC-20 token (EURC, WETH, any 0x token) to an address or saved contact on ${network.name}.`,
         parameters: z.object({
           to: z.string(),
           amount: z.string(),
           token: z.string().optional(),
         }),
         execute: async ({ to, amount, token }) => {
+          if (!amountRe.test(amount) || Number(amount) <= 0) return { error: `Invalid amount "${amount}".` }
           const resolved = await resolveRecipient(to)
           if ("error" in resolved) return resolved
           const recipient = resolved.address
           const native = isNativeToken(token)
-          let spl: ResolvedToken | undefined
+          let erc20: ResolvedToken | undefined
           if (!native) {
-            const resolved = await resolveToken(token!)
-            if ("error" in resolved) return resolved
-            spl = resolved
+            const r = await resolveToken(network, client, token!)
+            if ("error" in r) return r
+            erc20 = r
           }
-          const symbol = spl?.symbol ?? NATIVE_SYMBOL
-          const build = (owner: PublicKey) =>
-            spl
-              ? buildTokenTransfer(connection, owner, new PublicKey(recipient), spl.mint, amount, spl.decimals, spl.programId)
-              : buildSolTransfer(connection, owner, new PublicKey(recipient), amount)
+          const symbol = erc20?.symbol ?? NATIVE_SYMBOL
+          let tx: PreparedTx
+          try {
+            tx = erc20 ? buildTokenTransfer(erc20, recipient, amount) : buildNativeTransfer(recipient, amount)
+          } catch (e) {
+            return fail("Could not prepare transfer", e)
+          }
 
           if (signingMode === "wallet") {
             if (!ownerAddress) return noSigner()
-            try {
-              const tx = await build(new PublicKey(ownerAddress))
-              return {
-                kind: "action",
-                action: native ? "sendNative" : "sendToken",
-                to: recipient,
-                amount,
-                symbol,
-                txBase64: serializeTx(tx),
-                label: `Send ${amount} ${symbol}`,
-              }
-            } catch (e: any) {
-              return { error: `Could not prepare transfer: ${(e?.message || "unknown error").slice(0, 160)}` }
-            }
+            return walletAction({ action: native ? "sendNative" : "sendToken", to: recipient, amount, symbol, tx, label: `Send ${amount} ${symbol}` })
           }
 
-          // autonomous
-          if (!wallet) return noSigner()
+          if (!wallet || !signer) return noSigner()
           try {
-            const owner = wallet.keypair.publicKey
-            const tx = await build(owner)
-            const sig = await sendAndConfirmTransaction(connection, tx, [wallet.keypair])
-            return { kind: "transaction", status: "Submitted", action: "send", hash: sig, from: owner.toBase58(), to: recipient, value: `${amount} ${symbol}`, explorerUrl: explorerTx(sig) }
-          } catch (e: any) {
-            return { error: `Payment not sent: ${friendlyError(e)}` }
+            const { hash } = await sendPrepared(signer, client, tx)
+            return { kind: "transaction", status: "Success", action: "send", hash, from: wallet.address, to: recipient, value: `${amount} ${symbol}`, explorerUrl: explorerTx(network, hash) }
+          } catch (e) {
+            return fail("Payment not sent", e)
           }
         },
       }),
 
       deployToken: tool({
-        description: "Create a new SPL token on Solana with on-chain name/symbol metadata. Mints the full supply to the creator.",
+        description: `Create a new ERC-20 token on ${network.name} by deploying a contract. Mints the full supply to the creator, who stays the owner and can mint more later.`,
         parameters: z.object({
           name: z.string(),
           symbol: z.string(),
           supply: z.string().describe("Whole-token supply, e.g. 1000000"),
-          decimals: z.number().int().min(0).max(9).optional().describe("Defaults to 9"),
+          decimals: z.number().int().min(0).max(MAX_DECIMALS).optional().describe("Defaults to 18"),
         }),
         execute: async ({ name, symbol, supply, decimals }) => {
-          const params = { name, symbol, decimals: decimals ?? 9, supply, uri: "" }
-          if (!/^\d+(\.\d+)?$/.test(supply)) return { error: `Invalid supply "${supply}".` }
+          const clean = supply.replace(/[,_\s]/g, "")
+          if (!/^\d+$/.test(clean) || BigInt(clean) <= 0n) return { error: `Invalid supply "${supply}". Use a whole number of tokens.` }
+          const params = { name: name.trim().slice(0, 64), symbol: symbol.trim().slice(0, 16), decimals: decimals ?? 18, supply: clean }
           if (signingMode === "wallet") {
             if (!ownerAddress) return noSigner()
-            // The mint keypair is generated in the browser so it can co-sign.
-            return { kind: "action", action: "deployToken", ...params, label: `Create token ${name} (${symbol})` }
+            return walletAction({ action: "deployToken", deploy: { type: "token", ...params }, ...params, label: `Create token ${params.name} (${params.symbol})` })
           }
-          if (!wallet) return noSigner()
+          if (!wallet || !signer) return noSigner()
           try {
-            const { tx, mint } = await buildCreateToken(connection, wallet.keypair.publicKey, params)
-            const sig = await sendAndConfirmTransaction(connection, tx, [wallet.keypair, mint])
-            return { kind: "deploy", what: "token", name, symbol, supply, contractAddress: mint.publicKey.toBase58(), hash: sig, explorerUrl: explorerTx(sig) }
-          } catch (e: any) {
-            return { error: `Create failed: ${friendlyError(e)}` }
+            const { hash, address } = await deployPrepared(signer, client, buildDeployToken(params))
+            return { kind: "deploy", what: "token", name: params.name, symbol: params.symbol, supply: clean, contractAddress: address, contractUrl: explorerToken(network, address), hash, explorerUrl: explorerTx(network, hash) }
+          } catch (e) {
+            return fail("Create failed", e)
           }
         },
       }),
 
       deployNFT: tool({
-        description:
-          "Create a 1-of-1 NFT on Solana (SPL token, 0 decimals, supply 1, mint authority revoked) with on-chain name/symbol/uri metadata. The image is OPTIONAL — if the user attached an image (you'll see an IPFS URL in the message), pass it as `image`. Use for 'create an NFT' / 'mint an NFT'.",
+        description: `Create a 1-of-1 NFT on ${network.name} by deploying an ERC-721 contract whose single token is minted to the creator. The image is OPTIONAL: if the user attached an image (you'll see an IPFS URL in the message), pass it as \`image\`. Use for 'create an NFT' / 'mint an NFT'.`,
         parameters: z.object({
           name: z.string(),
           symbol: z.string(),
@@ -627,75 +600,87 @@ export async function POST(req: Request) {
           description: z.string().optional(),
         }),
         execute: async ({ name, symbol, image, description }) => {
-          let metadataUri: string | undefined
+          let metadataUri = ""
           let imageUsed: string | undefined
-          if (image) {
+          if (image && /^(https?:\/\/|ipfs:\/\/)/i.test(image)) {
             imageUsed = image
+            metadataUri = image
             if (isPinataConfigured()) {
               try {
                 const { ipfsUrl } = await uploadJSONToIPFS({ name, description: description || name, image })
                 metadataUri = ipfsUrl
               } catch {
-                metadataUri = image
+                /* fall back to the raw image URL */
               }
-            } else {
-              metadataUri = image
             }
           }
-
-          const params = { name, symbol, decimals: 0, supply: "1", uri: metadataUri || "", fixedSupply: true }
+          const params = { name: name.trim().slice(0, 64), symbol: symbol.trim().slice(0, 16), uri: metadataUri }
           if (signingMode === "wallet") {
             if (!ownerAddress) return noSigner()
-            return { kind: "action", action: "deployNFT", ...params, image: imageUsed, metadataUri, label: `Create NFT ${name} (${symbol})` }
+            return walletAction({ action: "deployNFT", deploy: { type: "nft", ...params }, ...params, image: imageUsed, metadataUri: metadataUri || undefined, label: `Create NFT ${params.name} (${params.symbol})` })
           }
-          if (!wallet) return noSigner()
+          if (!wallet || !signer) return noSigner()
           try {
-            const { tx, mint } = await buildCreateToken(connection, wallet.keypair.publicKey, params)
-            const sig = await sendAndConfirmTransaction(connection, tx, [wallet.keypair, mint])
-            return { kind: "deploy", what: "nft", name, symbol, image: imageUsed, metadataUri, contractAddress: mint.publicKey.toBase58(), hash: sig, explorerUrl: explorerTx(sig) }
-          } catch (e: any) {
-            return { error: `Create failed: ${friendlyError(e)}` }
+            const { hash, address } = await deployPrepared(signer, client, buildDeployNFT(params))
+            return { kind: "deploy", what: "nft", name: params.name, symbol: params.symbol, image: imageUsed, metadataUri: metadataUri || undefined, contractAddress: address, contractUrl: explorerToken(network, address), hash, explorerUrl: explorerTx(network, hash) }
+          } catch (e) {
+            return fail("Create failed", e)
           }
         },
       }),
 
       mintTokens: tool({
-        description: "Mint additional units of an existing SPL token mint to a recipient. Give the mint address; mints to the user unless another address is specified. The user must be the mint authority (NFTs created by Astrax have a fixed supply and cannot be minted further).",
-        parameters: z.object({ mint: z.string().describe("Mint address"), to: z.string().optional(), amount: z.string().optional() }),
-        execute: async ({ mint: mintArg, to, amount }) => {
-          if (!isValidAddress(mintArg)) return { error: "That is not a valid mint address." }
-          const recipient = to && isValidAddress(to) ? to : ownerAddress
-          if (!recipient || !isValidAddress(recipient)) return { error: "No recipient address available." }
-          const mint = new PublicKey(mintArg)
-          let info: { programId: PublicKey; decimals: number }
-          try {
-            info = await getMintInfo(connection, mint)
-          } catch (e: any) {
-            return { error: `Could not read that mint: ${e?.message || "not found"}.` }
+        description: "Mint additional units of a token created with Astrax (the user must be its owner). Give the token contract address; mints to the user unless another address is specified. NFTs created by Astrax are 1-of-1 and cannot be minted further.",
+        parameters: z.object({ token: z.string().describe("Token contract address"), to: z.string().optional(), amount: z.string().optional() }),
+        execute: async ({ token, to, amount }) => {
+          if (!isValidAddress(token)) return { error: "That is not a valid token contract address." }
+          const tokenAddr = normalizeAddress(token)
+          if (findToken(network, tokenAddr) || tokenAddr.toLowerCase() === USDC_ADDRESS) return { error: "Only tokens you created can be minted; that one is issued by Circle." }
+          if (!ownerAddress) return noSigner()
+          let recipient: `0x${string}` = ownerAddress
+          if (to) {
+            const r = await resolveRecipient(to)
+            if ("error" in r) return r
+            recipient = r.address
           }
-          const amt = amount || "1"
+          const amt = (amount || "1").replace(/[,_\s]/g, "")
+          if (!amountRe.test(amt) || Number(amt) <= 0) return { error: `Invalid amount "${amount}".` }
+          let decimals: number
+          let tokenSymbol = "tokens"
+          try {
+            const [d, owner, sym] = await Promise.all([
+              client.readContract({ address: tokenAddr, abi: ERC20_ABI, functionName: "decimals" }),
+              client.readContract({ address: tokenAddr, abi: ERC20_ABI, functionName: "owner" }),
+              client.readContract({ address: tokenAddr, abi: ERC20_ABI, functionName: "symbol" }).catch(() => "tokens"),
+            ])
+            decimals = Number(d)
+            tokenSymbol = String(sym)
+            if (owner.toLowerCase() !== ownerAddress.toLowerCase()) return { error: "You're not the owner of that token, so you can't mint more of it." }
+          } catch {
+            return { error: "That contract isn't a mintable Astrax token on this network." }
+          }
+          let tx: PreparedTx
+          try {
+            toBaseUnits(amt, decimals)
+            tx = buildMint(tokenAddr, recipient, amt, decimals)
+          } catch (e) {
+            return fail("Could not prepare mint", e)
+          }
           if (signingMode === "wallet") {
-            if (!ownerAddress) return noSigner()
-            try {
-              const tx = await buildMintTo(connection, new PublicKey(ownerAddress), mint, new PublicKey(recipient), amt, info.decimals, info.programId)
-              return { kind: "action", action: "mintTokens", mint: mintArg, to: recipient, amount: amt, txBase64: serializeTx(tx), label: `Mint ${amt} → ${recipient.slice(0, 4)}…${recipient.slice(-4)}` }
-            } catch (e: any) {
-              return { error: `Could not prepare mint: ${(e?.message || "unknown error").slice(0, 160)}` }
-            }
+            return walletAction({ action: "mintTokens", token: tokenAddr, to: recipient, amount: amt, symbol: tokenSymbol, tx, label: `Mint ${amt} ${tokenSymbol} → ${recipient.slice(0, 6)}…${recipient.slice(-4)}` })
           }
-          if (!wallet) return noSigner()
+          if (!signer) return noSigner()
           try {
-            const tx = await buildMintTo(connection, wallet.keypair.publicKey, mint, new PublicKey(recipient), amt, info.decimals, info.programId)
-            const sig = await sendAndConfirmTransaction(connection, tx, [wallet.keypair])
-            return { kind: "transaction", status: "Submitted", action: "mint", hash: sig, to: recipient, value: `${amt} token(s)`, explorerUrl: explorerTx(sig) }
-          } catch (e: any) {
-            return { error: `Mint failed: ${friendlyError(e)}` }
+            const { hash } = await sendPrepared(signer, client, tx)
+            return { kind: "transaction", status: "Success", action: "mint", hash, to: recipient, value: `${amt} ${tokenSymbol}`, explorerUrl: explorerTx(network, hash) }
+          } catch (e) {
+            return fail("Mint failed", e)
           }
         },
       }),
 
       scheduleTransfer: tool({
-        description: `Schedule a one-time or RECURRING transfer (e.g. salary). Requires Autonomous (secret key) signing mode. "when" accepts "in 10 minutes", "tomorrow at 5pm", or an ISO date. "every" makes it recurring: daily/weekly/monthly or "2 weeks"; "occurrences" is how many times (default 1 for one-time, or e.g. 12 for a year of monthly).`,
+        description: `Schedule a one-time or RECURRING transfer (e.g. salary) on ${network.name}. Requires Autonomous (private key) signing mode. "when" accepts "in 10 minutes", "tomorrow at 5pm", or an ISO date. "every" makes it recurring: daily/weekly/monthly or "2 weeks"; "occurrences" is how many times (default 1 for one-time, or e.g. 12 for a year of monthly).`,
         parameters: z.object({
           to: z.string(),
           amount: z.string(),
@@ -706,27 +691,33 @@ export async function POST(req: Request) {
         }),
         execute: async ({ to, amount, when, token, every, occurrences }) => {
           if (signingMode !== "auto" || !wallet) {
-            return { error: "Scheduling needs **Autonomous** signing (a secret key) so Astrax can send it later without you present. Switch to Autonomous in the sidebar **Signing** panel." }
+            return { error: "Scheduling needs **Autonomous** signing (a private key) so Astrax can send it later without you present. Switch to Autonomous in the sidebar **Signing** panel." }
           }
           const runAt = parseWhen(when)
-          if (!runAt) return { error: `Could not understand the time "${when}". Try "in 10 minutes" or "2026-01-01 17:00".` }
+          if (!runAt) return { error: `Could not understand the time "${when}". Try "in 10 minutes" or "2027-01-01 17:00".` }
+          if (runAt.getTime() < Date.now() - 60_000) return { error: "That time is in the past." }
           const resolved = await resolveRecipient(to)
           if ("error" in resolved) return resolved
           const recipient = resolved.address
-          if (!/^\d+(\.\d+)?$/.test(amount) || Number(amount) <= 0) return { error: `Invalid amount "${amount}".` }
+          if (!amountRe.test(amount) || Number(amount) <= 0) return { error: `Invalid amount "${amount}".` }
+          let tokenSymbol = NATIVE_SYMBOL
+          let tokenField = ""
           if (!isNativeToken(token)) {
-            const resolved = await resolveToken(token!)
-            if ("error" in resolved) return resolved
+            const r = await resolveToken(network, client, token!)
+            if ("error" in r) return r
+            tokenSymbol = r.symbol
+            tokenField = r.address
           }
           const intervalSecs = parseEvery(every)
-          const remaining = occurrences ?? 1
+          const remaining = intervalSecs ? occurrences ?? 1 : 1
           const id = `sch_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
           await insertSchedule({
             id,
-            owner: wallet.publicKey,
+            owner: addrKey(wallet.address),
+            network: network.key,
             recipient,
             amount,
-            token: token || "",
+            token: tokenField,
             next_run: runAt.getTime(),
             interval_secs: intervalSecs,
             remaining,
@@ -737,30 +728,32 @@ export async function POST(req: Request) {
             kind: "schedule",
             id,
             to: recipient,
-            amount: `${amount} ${token || NATIVE_SYMBOL}`,
+            amount: `${amount} ${tokenSymbol}`,
             runAt: runAt.toLocaleString(),
             recurrence: recurrenceLabel,
-            note: `Sent within about a minute of the time while Astrax is open anywhere, and within the hour otherwise. Your key is stored encrypted for this (${CLUSTER}).`,
+            note: `Runs on ${network.name}. Sent within about a minute of the time while Astrax is open anywhere, and within the hour otherwise. Your key is stored encrypted for this.`,
           }
         },
       }),
 
       listSchedules: tool({
-        description: "List the user's scheduled transfers (upcoming and past).",
+        description: `List the user's scheduled transfers on ${network.name} (upcoming and past).`,
         parameters: z.object({}),
         execute: async () => {
-          const owner = verifiedOwner
-          if (!owner) return needOwner()
-          const rows = (await listSchedulesByOwner(owner)).map((r) => ({
-            id: r.id,
-            to: r.recipient,
-            amount: `${r.amount} ${r.token || NATIVE_SYMBOL}`,
-            runAt: new Date(r.next_run).toLocaleString(),
-            recurrence: r.interval_secs ? `recurring (${r.remaining} left)` : "once",
-            status: r.status,
-            lastTx: r.last_tx || undefined,
-          }))
-          return { kind: "scheduleList", schedules: rows }
+          if (!verifiedOwner) return needOwner()
+          const rows = (await listSchedulesByOwner(verifiedOwner, network.key)).map((r) => {
+            const known = r.token ? findToken(network, r.token) : undefined
+            return {
+              id: r.id,
+              to: r.recipient,
+              amount: `${r.amount} ${r.token ? known?.symbol ?? `${r.token.slice(0, 6)}…` : NATIVE_SYMBOL}`,
+              runAt: new Date(r.next_run).toLocaleString(),
+              recurrence: r.interval_secs ? `recurring (${r.remaining} left)` : "once",
+              status: r.status,
+              lastTx: r.last_tx || undefined,
+            }
+          })
+          return { kind: "scheduleList", network: network.key, schedules: rows }
         },
       }),
 
@@ -768,35 +761,36 @@ export async function POST(req: Request) {
         description: "Cancel an active scheduled transfer by its id.",
         parameters: z.object({ id: z.string() }),
         execute: async ({ id }) => {
-          const owner = verifiedOwner
-          if (!owner) return needOwner()
-          const ok = await dbCancelSchedule(id, owner)
+          if (!verifiedOwner) return needOwner()
+          const ok = await dbCancelSchedule(id, verifiedOwner)
           return ok ? { kind: "scheduleCancelled", id } : { error: `No active schedule ${id} found for you.` }
         },
       }),
 
       createPaymentLink: tool({
-        description: `Create a shareable payment link requesting ${NATIVE_SYMBOL} to the user's address. Astrax tracks it and marks it paid automatically once someone pays.`,
+        description: `Create a shareable payment link requesting ${NATIVE_SYMBOL} to the user's address on ${network.name}. Astrax tracks it and marks it paid automatically once someone pays.`,
         parameters: z.object({ amount: z.string(), description: z.string().optional().describe("What the payment is for (shown to the payer)") }),
         execute: async ({ amount, description }) => {
-          if (!ownerAddress || !isValidAddress(ownerAddress)) return { error: "No receiving address available. Connect a wallet or add a secret key." }
-          if (!verifiedOwner) return NOT_OWNER
-          if (!/^\d+(\.\d+)?$/.test(amount) || Number(amount) <= 0) return { error: `Invalid amount "${amount}".` }
-          const link = await createPaymentLinkRecord({ owner: verifiedOwner, amount, description })
-          return { kind: "paymentLink", id: link.id, path: paymentLinkPath(link.id), url: paymentLinkUrl(link.id, origin), address: verifiedOwner, amount: `${amount} ${NATIVE_SYMBOL}`, description: link.description || undefined, status: link.status }
+          if (!ownerAddress) return { error: "No receiving address available. Connect a wallet or add a private key." }
+          if (!verifiedAddress || !verifiedOwner) return NOT_OWNER
+          if (!amountRe.test(amount) || Number(amount) <= 0) return { error: `Invalid amount "${amount}".` }
+          if ((amount.split(".")[1] ?? "").length > 6) return { error: "USDC supports at most 6 decimal places." }
+          const link = await createPaymentLinkRecord({ owner: verifiedAddress, network, amount, description })
+          return { kind: "paymentLink", id: link.id, network: network.key, path: paymentLinkPath(link.id), url: paymentLinkUrl(link.id, origin), address: verifiedAddress, amount: `${amount} ${NATIVE_SYMBOL}`, description: link.description || undefined, status: link.status }
         },
       }),
 
       listPaymentLinks: tool({
-        description: "List the user's payment links and whether each has been paid.",
+        description: `List the user's payment links on ${network.name} and whether each has been paid.`,
         parameters: z.object({}),
         execute: async () => {
           if (!verifiedOwner) return needOwner()
           const rows = await Promise.all(
-            (await listPaymentLinksByOwner(verifiedOwner, 20)).map((r) => (r.status === "open" ? verifyPaymentLink(r) : r)),
+            (await listPaymentLinksByOwner(verifiedOwner, network.key, 20)).map((r) => (r.status === "open" ? verifyPaymentLink(r) : r)),
           )
           return {
             kind: "paymentLinkList",
+            network: network.key,
             links: rows.map((r) => ({
               id: r.id,
               path: paymentLinkPath(r.id),
@@ -816,7 +810,7 @@ export async function POST(req: Request) {
         execute: async ({ link, description }) => {
           if (!verifiedOwner) return needOwner()
           await addAsset(verifiedOwner, link, description)
-          return { kind: "asset", link, description, owner: verifiedOwner, saved: true }
+          return { kind: "asset", link, description, owner: verifiedAddress, saved: true }
         },
       }),
 
@@ -831,13 +825,13 @@ export async function POST(req: Request) {
 
       // ── VISUALS / DATA ──────────────────────────────────────────────────────
       getPriceChart: tool({
-        description: `Get an OHLC candlestick price chart for a token over a number of days. Defaults to ${NATIVE_SYMBOL}. Prices come from Coinbase.`,
+        description: "Get an OHLC candlestick price chart for an asset over a number of days. Defaults to ETH (WETH on Arc; USDC is pegged to $1). Also BTC/cirBTC, EURC, USDC. Prices come from Coinbase.",
         parameters: z.object({
-          symbol: z.string().optional().describe(`Token symbol, e.g. ${NATIVE_SYMBOL}, USDC. Defaults to ${NATIVE_SYMBOL}.`),
+          symbol: z.string().optional().describe("Asset symbol, e.g. ETH, BTC, EURC, USDC. Defaults to ETH."),
           days: z.number().int().min(2).max(30).optional(),
         }),
         execute: async ({ symbol, days }) => {
-          const sym = (symbol || NATIVE_SYMBOL).toUpperCase()
+          const sym = (symbol || "ETH").toUpperCase()
           const d = days ?? 7
           let data = await dailyCandles(sym, d)
           let indicative = false
@@ -895,14 +889,14 @@ export async function POST(req: Request) {
       }),
 
       swap: tool({
-        description: "Swap one token for another on a Solana DEX. Requires a configured DEX/aggregator.",
+        description: "Swap one token for another on an Arc DEX. Requires a configured DEX/aggregator.",
         parameters: z.object({ fromToken: z.string(), toToken: z.string(), amount: z.string() }),
         execute: async ({ fromToken, toToken, amount }) => {
-          const dex = process.env.SOLANA_DEX
+          const dex = process.env.ARC_DEX
           if (!dex) {
-            return { kind: "swap", fromCurrency: fromToken, toCurrency: toToken, amount, status: "unavailable", note: "No DEX is configured yet. Set SOLANA_DEX to enable on-chain swaps." }
+            return { kind: "swap", fromCurrency: fromToken, toCurrency: toToken, amount, status: "unavailable", note: "No DEX is configured yet. Set ARC_DEX to enable on-chain swaps." }
           }
-          return { kind: "swap", fromCurrency: fromToken, toCurrency: toToken, amount, status: "router-configured", note: "DEX configured — swap execution wiring is a next step." }
+          return { kind: "swap", fromCurrency: fromToken, toCurrency: toToken, amount, status: "router-configured", note: "DEX configured; swap execution wiring is a next step." }
         },
       }),
     },

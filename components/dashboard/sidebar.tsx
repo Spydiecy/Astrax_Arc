@@ -9,6 +9,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useCredentials } from "@/contexts/CredentialsContext"
+import { useNetwork } from "@/contexts/NetworkContext"
 import { ScheduledModal } from "@/components/scheduled-modal"
 import { PaymentLinksModal } from "@/components/payment-links-modal"
 import { ContactsModal } from "@/components/contacts-modal"
@@ -24,6 +25,7 @@ const short = (a?: string | null) => (a && a.length > 12 ? `${a.slice(0, 6)}…$
 export function DashboardSidebar({ open, setOpen }: DashboardSidebarProps) {
   const { resolvedTheme } = useTheme()
   const { privateKey, setPrivateKey, derivedAddress, hasPrivateKey, signingMode, setSigningMode } = useCredentials()
+  const { network } = useNetwork()
   const [showPrivateKey, setShowPrivateKey] = useState(false)
   const [showPanel, setShowPanel] = useState(false)
   const [mounted, setMounted] = useState(false)
@@ -245,7 +247,7 @@ export function DashboardSidebar({ open, setOpen }: DashboardSidebarProps) {
             <BookUser className="h-4 w-4 flex-shrink-0" />
             {open && <span className="ml-2">Contacts</span>}
           </button>
-          <a href="https://github.com/Spydiecy/Astrax/blob/main/README.md" target="_blank" rel="noopener noreferrer" className={navBtn(false)}>
+          <a href="https://github.com/Spydiecy/Astrax_Arc/blob/main/README.md" target="_blank" rel="noopener noreferrer" className={navBtn(false)}>
             <FileText className="h-4 w-4 flex-shrink-0" />
             {open && <span className="ml-2">Docs</span>}
           </a>
@@ -276,21 +278,23 @@ export function DashboardSidebar({ open, setOpen }: DashboardSidebarProps) {
                   ) : (
                     <div className="space-y-2">
                       <label className={cn("text-xs flex items-center space-x-1", isDark ? "text-gray-400" : "text-gray-600")}>
-                        <Key className="h-3 w-3" /><span>Secret Key</span>
+                        <Key className="h-3 w-3" /><span>Private Key</span>
                       </label>
                       <div className="relative">
                         <input
                           type={showPrivateKey ? "text" : "password"}
                           value={privateKey}
                           onChange={(e) => setPrivateKey(e.target.value)}
-                          placeholder="base58 secret key (never leaves your request)"
+                          placeholder="0x… private key (64 hex characters)"
+                          autoComplete="off"
+                          spellCheck={false}
                           className={cn("w-full px-3 py-2 pr-10 border rounded-md text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:border-transparent", isDark ? "bg-gray-900 border-gray-700 text-white focus:ring-white" : "bg-gray-100 border-gray-300 text-black focus:ring-gray-500")}
                         />
                         <button type="button" onClick={() => setShowPrivateKey(!showPrivateKey)} className={cn("absolute right-3 top-1/2 -translate-y-1/2", isDark ? "text-gray-400 hover:text-white" : "text-gray-600 hover:text-black")}>
                           {showPrivateKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
                       </div>
-                      {privateKey && !derivedAddress && <p className="text-xs text-red-500">That doesn&apos;t look like a valid secret key.</p>}
+                      {privateKey && !derivedAddress && <p className="text-xs text-red-500">That doesn&apos;t look like a valid private key.</p>}
                       {derivedAddress && (
                         <div className={cn("flex items-center gap-2 text-xs rounded-md px-2 py-1.5", isDark ? "bg-gray-900 text-gray-300" : "bg-gray-100 text-gray-700")}>
                           <Check className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
@@ -299,7 +303,10 @@ export function DashboardSidebar({ open, setOpen }: DashboardSidebarProps) {
                         </div>
                       )}
                       <p className={cn("text-xs leading-relaxed", isDark ? "text-gray-500" : "text-gray-500")}>
-                        Devnet only. Used server-side to sign; for scheduled payments it&apos;s stored encrypted so they can run later.
+                        {network.isTestnet
+                          ? "Use a dedicated test wallet."
+                          : "Arc Mainnet: this key moves real USDC. Use a dedicated hot wallet with a small balance."}{" "}
+                        Sent with each request to sign server-side; for scheduled payments it&apos;s stored encrypted so they can run later.
                       </p>
                     </div>
                   )}

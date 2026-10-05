@@ -1,66 +1,69 @@
 "use client"
 
-import { useParams } from "next/navigation"
+// Simple, untracked payment page: /payment-link/<address>/<amount>?network=mainnet|testnet
+// (tracked links created by the agent live at /pay/<id>).
+import { useParams, useSearchParams } from "next/navigation"
 import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Copy, ExternalLink } from "lucide-react"
 import QRCode from "qrcode"
-import { useConnection, useWallet } from "@solana/wallet-adapter-react"
-import { PublicKey } from "@solana/web3.js"
-import { buildSolTransfer } from "@/lib/spl"
+import { useAccount } from "wagmi"
+import { getWalletClient, switchChain } from "wagmi/actions"
 import { CustomConnectButton } from "@/components/ui/connect-wallet-button"
-import { NATIVE_SYMBOL, CLUSTER_LABEL, explorerTx, isValidAddress } from "@/lib/solana"
+import { useNetwork } from "@/contexts/NetworkContext"
+import { wagmiConfig } from "@/lib/wagmi"
+import { NATIVE_SYMBOL, estimateArcFees, explorerTx, getPublicClient, isNetworkKey, isSendableAddress, resolveNetwork } from "@/lib/arc"
+import { buildNativeTransfer, friendlyError } from "@/lib/evm"
 
 export default function PaymentPortalPage() {
   const params = useParams()
+  const search = useSearchParams()
+  const { network: appNetwork } = useNetwork()
   const [qrCodeUrl, setQrCodeUrl] = useState<string>("")
   const [paymentStatus, setPaymentStatus] = useState<"pending" | "processing" | "completed" | "failed">("pending")
-  const [signature, setSignature] = useState<string>("")
+  const [hash, setHash] = useState<string>("")
+  const [error, setError] = useState("")
 
   const receiverAddress = decodeURIComponent(params.address as string)
   const amount = decodeURIComponent(params.amount as string)
-  const isValidLink = isValidAddress(receiverAddress) && /^\d+(\.\d+)?$/.test(amount) && Number(amount) > 0
+  const networkParam = search.get("network")
+  const network = isNetworkKey(networkParam) ? resolveNetwork(networkParam) : appNetwork
+  const isValidLink =
+    isSendableAddress(receiverAddress) && /^\d+(\.\d{1,6})?$/.test(amount) && Number(amount) > 0
 
-  const { connection } = useConnection()
-  const { publicKey, connected, sendTransaction } = useWallet()
+  const { address, isConnected, chainId: walletChainId } = useAccount()
 
   useEffect(() => {
-    const generateQR = async () => {
-      try {
-        // Solana Pay transfer request URI.
-        const paymentUrl = `solana:${receiverAddress}?amount=${amount}&label=Astrax`
-        const qrUrl = await QRCode.toDataURL(paymentUrl, {
-          width: 200,
-          margin: 2,
-          color: { dark: "#000000", light: "#FFFFFF" },
-        })
-        setQrCodeUrl(qrUrl)
-      } catch (error) {
-        console.error("Error generating QR code:", error)
-      }
-    }
-    if (isValidLink) generateQR()
-  }, [receiverAddress, amount, isValidLink])
+    if (!isValidLink) return
+    QRCode.toDataURL(window.location.href, { width: 200, margin: 2, color: { dark: "#000000", light: "#FFFFFF" } })
+      .then(setQrCodeUrl)
+      .catch(() => setQrCodeUrl(""))
+  }, [isValidLink])
 
   const sendPayment = async () => {
-    if (!connected || !publicKey) {
-      alert("Please connect your wallet first")
-      return
-    }
+    if (!isConnected || !address) return
     setPaymentStatus("processing")
+    setError("")
     try {
-      const tx = await buildSolTransfer(connection, publicKey, new PublicKey(receiverAddress), amount)
-      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized")
-      tx.recentBlockhash = blockhash
-      const sig = await sendTransaction(tx, connection)
-      setSignature(sig)
-      const res = await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed")
-      if (res.value.err) throw new Error("Transaction failed on-chain")
+      const chainId = network.id
+      if (walletChainId !== chainId) await switchChain(wagmiConfig, { chainId })
+      const wallet = await getWalletClient(wagmiConfig, { chainId, account: address })
+      const client = getPublicClient(network)
+      const tx = buildNativeTransfer(receiverAddress, amount)
+      const txHash = await wallet.sendTransaction({
+        account: address,
+        chain: network.chain,
+        to: tx.to,
+        value: BigInt(tx.value!),
+        ...(await estimateArcFees(client)),
+      })
+      setHash(txHash)
+      const receipt = await client.waitForTransactionReceipt({ hash: txHash, timeout: 90_000 })
+      if (receipt.status !== "success") throw new Error("Transaction failed on-chain")
       setPaymentStatus("completed")
-    } catch (error: any) {
-      console.error("Payment error:", error)
-      alert(`Payment failed: ${error.message || "Unknown error"}`)
+    } catch (e) {
+      setError(friendlyError(e, network))
       setPaymentStatus("failed")
     }
   }
@@ -68,17 +71,17 @@ export default function PaymentPortalPage() {
   const getStatusColor = () => {
     switch (paymentStatus) {
       case "processing":
-      case "completed":
         return "bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400 rounded-md px-3 py-1"
+      case "completed":
+        return "bg-green-50 dark:bg-green-950 text-green-600 dark:text-green-400 rounded-md px-3 py-1"
+      case "failed":
+        return "bg-red-50 dark:bg-red-950 text-red-600 dark:text-red-400 rounded-md px-3 py-1"
       default:
         return "bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-md px-3 py-1"
     }
   }
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text)
-    alert("Copied to clipboard!")
-  }
+  const copyToClipboard = (text: string) => navigator.clipboard.writeText(text).catch(() => {})
 
   if (!isValidLink) {
     return (
@@ -96,16 +99,16 @@ export default function PaymentPortalPage() {
       <div className="max-w-2xl mx-auto space-y-8">
         <div className="text-center">
           <h1 className="text-4xl font-bold text-black dark:text-white mb-2">Payment Portal</h1>
-          <p className="text-gray-600 dark:text-gray-400">Solana Payment Request</p>
+          <p className="text-gray-600 dark:text-gray-400">USDC payment request on {network.name}</p>
         </div>
 
         <Card className="bg-white dark:bg-black border-gray-300 dark:border-gray-800 p-6">
           <div className="space-y-4">
-            <div className="flex justify-between items-start">
+            <div className="flex justify-between items-start gap-3">
               <span className="text-gray-600 dark:text-gray-400">Receiver Address:</span>
               <div className="flex items-center gap-2">
                 <span className="text-sm font-mono break-all max-w-xs text-black dark:text-white">{receiverAddress}</span>
-                <Button variant="ghost" size="sm" onClick={() => copyToClipboard(receiverAddress)} className="p-1 h-6 w-6 hover:bg-gray-100 dark:hover:bg-gray-800">
+                <Button variant="ghost" size="sm" aria-label="Copy address" onClick={() => copyToClipboard(receiverAddress)} className="p-1 h-6 w-6 hover:bg-gray-100 dark:hover:bg-gray-800">
                   <Copy className="h-3 w-3" />
                 </Button>
               </div>
@@ -121,37 +124,38 @@ export default function PaymentPortalPage() {
               <span className={getStatusColor()}>{paymentStatus}</span>
             </div>
 
-            {signature && (
-              <div className="flex justify-between items-start">
-                <span className="text-gray-600 dark:text-gray-400">Signature:</span>
+            {hash && (
+              <div className="flex justify-between items-start gap-3">
+                <span className="text-gray-600 dark:text-gray-400">Transaction:</span>
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-mono break-all max-w-xs text-black dark:text-white">{signature.slice(0, 8)}…{signature.slice(-8)}</span>
-                  <Button variant="ghost" size="sm" onClick={() => copyToClipboard(signature)} className="p-1 h-6 w-6 hover:bg-gray-100 dark:hover:bg-gray-800">
+                  <span className="text-sm font-mono break-all max-w-xs text-black dark:text-white">{hash.slice(0, 10)}…{hash.slice(-8)}</span>
+                  <Button variant="ghost" size="sm" aria-label="Copy transaction hash" onClick={() => copyToClipboard(hash)} className="p-1 h-6 w-6 hover:bg-gray-100 dark:hover:bg-gray-800">
                     <Copy className="h-3 w-3" />
                   </Button>
-                  <Button variant="ghost" size="sm" onClick={() => window.open(explorerTx(signature), '_blank')} className="p-1 h-6 w-6 hover:bg-gray-100 dark:hover:bg-gray-800">
+                  <Button variant="ghost" size="sm" aria-label="View on explorer" onClick={() => window.open(explorerTx(network, hash), "_blank")} className="p-1 h-6 w-6 hover:bg-gray-100 dark:hover:bg-gray-800">
                     <ExternalLink className="h-3 w-3" />
                   </Button>
                 </div>
               </div>
             )}
+            {error && <p className="text-sm text-red-600 dark:text-red-400" role="alert">{error}</p>}
           </div>
         </Card>
 
         {qrCodeUrl && (
           <Card className="bg-white dark:bg-black border-gray-300 dark:border-gray-800 p-6">
             <div className="text-center">
-              <h3 className="text-lg font-semibold mb-4 text-black dark:text-white">Scan to Pay</h3>
+              <h3 className="text-lg font-semibold mb-1 text-black dark:text-white">Open on your phone</h3>
+              <p className="text-xs text-gray-500 mb-4">Scan to open this page in your mobile wallet&apos;s browser.</p>
               <div className="flex justify-center">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={qrCodeUrl} alt="Payment QR Code" className="rounded-lg" />
+                <img src={qrCodeUrl} alt="QR code that opens this payment page" className="rounded-lg" />
               </div>
             </div>
           </Card>
         )}
 
-        {/* Connect Wallet Section */}
-        {!connected ? (
+        {!isConnected ? (
           <Card className="bg-white dark:bg-black border-gray-300 dark:border-gray-800 p-6">
             <div className="text-center">
               <h3 className="text-lg font-semibold mb-4 text-black dark:text-white">Connect Wallet to Pay</h3>
@@ -172,8 +176,8 @@ export default function PaymentPortalPage() {
 
         <Card className="bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-800 p-4">
           <div className="text-center text-sm text-gray-600 dark:text-gray-400">
-            <p>This payment is sent directly on Solana</p>
-            <p>Network: Solana {CLUSTER_LABEL}</p>
+            <p>This payment is sent directly on Arc, with USDC as the gas token.</p>
+            <p>Network: {network.name} (chain {network.id})</p>
             <p>All transactions are recorded on-chain for transparency</p>
           </div>
         </Card>

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { createChallenge } from "@/lib/auth"
 import { requestOrigin } from "@/lib/origin"
-import { isValidAddress } from "@/lib/solana"
+import { isValidAddress } from "@/lib/arc"
 
 export const runtime = "nodejs"
 

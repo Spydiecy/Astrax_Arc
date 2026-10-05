@@ -14,10 +14,17 @@ export interface Candle {
   volume: number
 }
 
-/** Current USD spot price for a symbol via Coinbase, e.g. spotPriceUSD("USDT"). */
+// Arc wrapped assets trade under their underlying ticker.
+const PRICE_ALIAS: Record<string, string> = { WETH: "ETH", CIRBTC: "BTC" }
+const priceSymbol = (symbol: string) => {
+  const s = symbol.trim().toUpperCase()
+  return PRICE_ALIAS[s] ?? s
+}
+
+/** Current USD spot price for a symbol via Coinbase, e.g. spotPriceUSD("USDC"). */
 export async function spotPriceUSD(symbol: string): Promise<number | null> {
   try {
-    const res = await fetch(`https://api.coinbase.com/v2/prices/${symbol.toUpperCase()}-USD/spot`, {
+    const res = await fetch(`https://api.coinbase.com/v2/prices/${priceSymbol(symbol)}-USD/spot`, {
       headers: { accept: "application/json" },
     })
     if (!res.ok) return null
@@ -32,7 +39,7 @@ export async function spotPriceUSD(symbol: string): Promise<number | null> {
 /** Historical spot price on a given date (Coinbase supports ?date=YYYY-MM-DD). */
 async function spotPriceOnDate(symbol: string, date: string): Promise<number | null> {
   try {
-    const res = await fetch(`https://api.coinbase.com/v2/prices/${symbol.toUpperCase()}-USD/spot?date=${date}`, {
+    const res = await fetch(`https://api.coinbase.com/v2/prices/${priceSymbol(symbol)}-USD/spot?date=${date}`, {
       headers: { accept: "application/json" },
     })
     if (!res.ok) return null
@@ -48,12 +55,14 @@ async function spotPriceOnDate(symbol: string, date: string): Promise<number | n
 export async function dailyCandles(symbol: string, days: number): Promise<Candle[] | null> {
   try {
     const res = await fetch(
-      `https://api.exchange.coinbase.com/products/${symbol.toUpperCase()}-USD/candles?granularity=86400`,
+      `https://api.exchange.coinbase.com/products/${priceSymbol(symbol)}-USD/candles?granularity=86400`,
       { headers: { accept: "application/json", "User-Agent": "astrax" } },
     )
     if (!res.ok) return null
     const arr = (await res.json()) as number[][]
     if (!Array.isArray(arr) || arr.length === 0) return null
+    // Delisted products keep returning their last (old) candles; treat those as no market.
+    if (Date.now() - arr[0][0] * 1000 > 3 * 86_400_000) return null
     // Coinbase returns [ time, low, high, open, close, volume ], newest first.
     return arr
       .slice(0, days)

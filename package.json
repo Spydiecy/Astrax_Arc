@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "compile:contracts": "node scripts/compile-contracts.mjs"
   },
   "dependencies": {
     "@ai-sdk/google": "^1.2.3",
@@ -14,16 +15,10 @@
     "@ai-sdk/react": "^1.2.12",
     "@google/genai": "^0.15.0",
     "@libsql/client": "0.18.0",
-    "@noble/curves": "2.4.0",
     "@radix-ui/react-slot": "^1.2.2",
-    "@solana/spl-token": "0.4.15",
-    "@solana/spl-token-metadata": "0.1.6",
-    "@solana/wallet-adapter-base": "0.9.28",
-    "@solana/wallet-adapter-react": "0.15.40",
-    "@solana/wallet-adapter-react-ui": "0.9.40",
-    "@solana/web3.js": "1.99.0",
+    "@rainbow-me/rainbowkit": "2.2.11",
+    "@tanstack/react-query": "5.67.0",
     "ai": "^4.3.19",
-    "bs58": "6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "framer-motion": "^12.23.12",
@@ -39,6 +34,8 @@
     "remark-gfm": "4.0.1",
     "server-only": "0.0.1",
     "tailwind-merge": "^3.3.0",
+    "viem": "2.52.2",
+    "wagmi": "2.19.5",
     "zod": "^3.25.76"
   },
   "devDependencies": {
@@ -50,8 +47,12 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "15.5.27",
+    "solc": "0.8.28",
     "tailwindcss": "^4",
     "tw-animate-css": "^1.3.0",
     "typescript": "^5"
+  },
+  "overrides": {
+    "@base-org/account": "1.1.1"
   }
 }

@@ -16,6 +16,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS schedules (
     id TEXT PRIMARY KEY,
     owner TEXT NOT NULL,
+    network TEXT NOT NULL DEFAULT 'testnet',
     recipient TEXT NOT NULL,
     amount TEXT NOT NULL,
     token TEXT NOT NULL DEFAULT '',
@@ -26,6 +27,7 @@ const SCHEMA = [
     enc_key TEXT NOT NULL,
     last_tx TEXT,
     note TEXT,
+    locked_until INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS schedules_owner ON schedules(owner, created_at)`,
@@ -33,11 +35,13 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS payment_links (
     id TEXT PRIMARY KEY,
     owner TEXT NOT NULL,
+    network TEXT NOT NULL DEFAULT 'testnet',
     recipient TEXT NOT NULL,
     amount TEXT NOT NULL,
-    token TEXT NOT NULL DEFAULT 'SOL',
+    token TEXT NOT NULL DEFAULT 'USDC',
     description TEXT NOT NULL DEFAULT '',
     reference TEXT NOT NULL UNIQUE,
+    start_block INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'open',
     paid_signature TEXT,
     payer TEXT,
@@ -68,12 +72,9 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS rate_limits (key TEXT PRIMARY KEY, window_start INTEGER NOT NULL, count INTEGER NOT NULL)`,
 ]
 
-// Columns added after a table first shipped. ALTER TABLE fails harmlessly if the
-// column already exists, so these are safe to run on every start.
-const MIGRATIONS = [
-  // When a run claims a scheduled payment, so two runs can never send it twice.
-  `ALTER TABLE schedules ADD COLUMN locked_until INTEGER NOT NULL DEFAULT 0`,
-]
+// Columns added after a table first shipped go here as `ALTER TABLE … ADD COLUMN …`.
+// They are re-run on every start and a "duplicate column" error is ignored.
+const MIGRATIONS: string[] = []
 
 function makeClient(): Client {
   const url = process.env.TURSO_DATABASE_URL?.trim()
@@ -124,12 +125,15 @@ async function run(sql: string, args: InArgs = []): Promise<number> {
 export interface PaymentLinkRow {
   id: string
   owner: string
+  network: string
   recipient: string
   amount: string
   token: string
   description: string
-  /** Solana Pay reference key: a random public key included in the payment tx so it can be found on-chain. */
+  /** Random 32-byte hex value the payer's transaction carries as calldata, tying the payment to this link. */
   reference: string
+  /** Block height when the link was created; payments are searched from here. */
+  start_block: number
   status: "open" | "paid" | "cancelled"
   paid_signature: string | null
   payer: string | null
@@ -137,11 +141,11 @@ export interface PaymentLinkRow {
   created_at: number
 }
 
-export async function insertPaymentLink(l: Pick<PaymentLinkRow, "id" | "owner" | "recipient" | "amount" | "token" | "description" | "reference">): Promise<void> {
+export async function insertPaymentLink(l: Pick<PaymentLinkRow, "id" | "owner" | "network" | "recipient" | "amount" | "token" | "description" | "reference" | "start_block">): Promise<void> {
   await run(
-    `INSERT INTO payment_links (id, owner, recipient, amount, token, description, reference, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
-    [l.id, l.owner, l.recipient, l.amount, l.token, l.description, l.reference, Date.now()],
+    `INSERT INTO payment_links (id, owner, network, recipient, amount, token, description, reference, start_block, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+    [l.id, l.owner, l.network, l.recipient, l.amount, l.token, l.description, l.reference, l.start_block, Date.now()],
   )
 }
 
@@ -149,8 +153,8 @@ export function getPaymentLink(id: string): Promise<PaymentLinkRow | null> {
   return first<PaymentLinkRow>(`SELECT * FROM payment_links WHERE id = ?`, [id])
 }
 
-export function listPaymentLinksByOwner(owner: string, limit = 100): Promise<PaymentLinkRow[]> {
-  return all<PaymentLinkRow>(`SELECT * FROM payment_links WHERE owner = ? ORDER BY created_at DESC LIMIT ?`, [owner, limit])
+export function listPaymentLinksByOwner(owner: string, network: string, limit = 100): Promise<PaymentLinkRow[]> {
+  return all<PaymentLinkRow>(`SELECT * FROM payment_links WHERE owner = ? AND network = ? ORDER BY created_at DESC LIMIT ?`, [owner, network, limit])
 }
 
 /** Marks an open link paid. Returns false if it was already paid/cancelled. */
@@ -169,6 +173,7 @@ export async function cancelPaymentLink(id: string, owner: string): Promise<bool
 export interface ScheduleRow {
   id: string
   owner: string
+  network: string
   recipient: string
   amount: string
   token: string
@@ -184,6 +189,7 @@ export interface ScheduleRow {
 export interface NewSchedule {
   id: string
   owner: string
+  network: string
   recipient: string
   amount: string
   token: string
@@ -193,19 +199,19 @@ export interface NewSchedule {
   enc_key: string
 }
 
-const PUBLIC_COLS = "id, owner, recipient, amount, token, next_run, interval_secs, remaining, status, last_tx, note, created_at"
+const PUBLIC_COLS = "id, owner, network, recipient, amount, token, next_run, interval_secs, remaining, status, last_tx, note, created_at"
 
 export async function insertSchedule(s: NewSchedule): Promise<void> {
   await run(
-    `INSERT INTO schedules (id, owner, recipient, amount, token, next_run, interval_secs, remaining, status, enc_key, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
-    [s.id, s.owner, s.recipient, s.amount, s.token, s.next_run, s.interval_secs, s.remaining, s.enc_key, Date.now()],
+    `INSERT INTO schedules (id, owner, network, recipient, amount, token, next_run, interval_secs, remaining, status, enc_key, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+    [s.id, s.owner, s.network, s.recipient, s.amount, s.token, s.next_run, s.interval_secs, s.remaining, s.enc_key, Date.now()],
   )
 }
 
 /** Public rows for a user (never includes the encrypted key). */
-export function listSchedulesByOwner(owner: string): Promise<ScheduleRow[]> {
-  return all<ScheduleRow>(`SELECT ${PUBLIC_COLS} FROM schedules WHERE owner = ? ORDER BY created_at DESC`, [owner])
+export function listSchedulesByOwner(owner: string, network: string): Promise<ScheduleRow[]> {
+  return all<ScheduleRow>(`SELECT ${PUBLIC_COLS} FROM schedules WHERE owner = ? AND network = ? ORDER BY created_at DESC`, [owner, network])
 }
 
 /** Due active jobs (includes enc_key — scheduler use only). */

@@ -1,31 +1,34 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { useCredentials } from "@/contexts/CredentialsContext"
-import { useConnection, useWallet } from "@solana/wallet-adapter-react"
-import type { Keypair, Transaction } from "@solana/web3.js"
+import { useAccount } from "wagmi"
+import { getWalletClient, switchChain } from "wagmi/actions"
 import { Loader2, Zap, CheckCircle2, ArrowUpRight } from "lucide-react"
-import { explorerTx } from "@/lib/solana"
-import { buildCreateToken, deserializeTx } from "@/lib/spl"
+import { useCredentials } from "@/contexts/CredentialsContext"
+import { wagmiConfig } from "@/lib/wagmi"
+import { estimateArcFees, explorerTx, explorerToken, getPublicClient, resolveNetwork, type NetworkKey } from "@/lib/arc"
+import { buildDeployNFT, buildDeployToken, friendlyError, type PreparedTx } from "@/lib/evm"
 
 export interface PendingAction {
   action: "sendNative" | "sendToken" | "deployToken" | "deployNFT" | "mintTokens"
   label: string
-  /** Server-prepared transaction (transfers / mint-to). Absent for create actions. */
-  txBase64?: string
+  /** Network the agent prepared this for; the wallet is switched to it before signing. */
+  network?: NetworkKey
+  chainId?: number
+  /** Server-prepared transaction (transfers / mints). Absent for deployments. */
+  tx?: PreparedTx
+  /** Contract deployment parameters (token / NFT); the request is built here. */
+  deploy?:
+    | { type: "token"; name: string; symbol: string; decimals: number; supply: string }
+    | { type: "nft"; name: string; symbol: string; uri: string }
   to?: string
-  mint?: string
+  token?: string
   symbol?: string
   amount?: string
-  // Create-token / NFT params — the tx is built in the browser so the fresh
-  // mint keypair can co-sign without ever leaving this page.
   name?: string
   supply?: string
-  decimals?: number
-  uri?: string
-  fixedSupply?: boolean
-  metadataUri?: string
   image?: string
+  metadataUri?: string
 }
 
 const short = (a?: string) => (a && a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a || "")
@@ -33,14 +36,14 @@ const short = (a?: string) => (a && a.length > 12 ? `${a.slice(0, 6)}…${a.slic
 // Confirmed actions are remembered per tool call, so a reloaded chat shows
 // "Confirmed" instead of offering to pay again.
 const doneKey = (id: string) => `astrax_tx_done:${id}`
-interface DoneRecord { signature: string; mint?: string }
+interface DoneRecord { hash: string; contract?: string }
 
-export function TxActionButton({ id, action, onDone }: { id?: string; action: PendingAction; onDone?: (sig: string) => void }) {
-  const { connection } = useConnection()
-  const { publicKey, sendTransaction, connected } = useWallet()
+export function TxActionButton({ id, action, onDone }: { id?: string; action: PendingAction; onDone?: (hash: string) => void }) {
+  const { address, isConnected, chainId: walletChainId } = useAccount()
   const { signingMode } = useCredentials()
-  const [signature, setSignature] = useState<string>()
-  const [createdMint, setCreatedMint] = useState<string>()
+  const network = resolveNetwork(action.network)
+  const [hash, setHash] = useState<string>()
+  const [contract, setContract] = useState<string>()
   const [phase, setPhase] = useState<"idle" | "wallet" | "mining" | "done" | "error">("idle")
   const [errMsg, setErrMsg] = useState("")
 
@@ -48,9 +51,9 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
     if (!id) return
     try {
       const rec = JSON.parse(localStorage.getItem(doneKey(id)) || "null") as DoneRecord | null
-      if (rec?.signature) {
-        setSignature(rec.signature)
-        setCreatedMint(rec.mint)
+      if (rec?.hash) {
+        setHash(rec.hash)
+        setContract(rec.contract)
         setPhase("done")
       }
     } catch {
@@ -59,7 +62,7 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
   }, [id])
 
   const execute = useCallback(async () => {
-    if (!connected || !publicKey) {
+    if (!isConnected || !address) {
       setErrMsg("Connect your wallet first.")
       setPhase("error")
       return
@@ -67,59 +70,56 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
     setPhase("wallet")
     setErrMsg("")
     try {
-      let tx: Transaction
-      let mintAddr: string | undefined
-      const signers: Keypair[] = []
-      if (action.action === "deployToken" || action.action === "deployNFT") {
-        const built = await buildCreateToken(connection, publicKey, {
-          name: action.name || "Token",
-          symbol: action.symbol || "TKN",
-          uri: action.uri || "",
-          decimals: action.decimals ?? 9,
-          supply: action.supply || "0",
-          fixedSupply: action.fixedSupply,
-        })
-        tx = built.tx
-        signers.push(built.mint)
-        mintAddr = built.mint.publicKey.toBase58()
-        setCreatedMint(mintAddr)
+      if (walletChainId !== network.id) await switchChain(wagmiConfig, { chainId: network.id })
+      const wallet = await getWalletClient(wagmiConfig, { chainId: network.id, account: address })
+      const client = getPublicClient(network)
+      // Arc's mempool drops anything below its 20 gwei floor, so set fees explicitly.
+      const fees = await estimateArcFees(client)
+
+      let txHash: `0x${string}`
+      if (action.deploy) {
+        const req = action.deploy.type === "token" ? buildDeployToken(action.deploy) : buildDeployNFT(action.deploy)
+        txHash = await wallet.deployContract({ account: address, chain: network.chain, abi: req.abi, bytecode: req.bytecode, args: req.args, ...fees })
       } else {
-        if (!action.txBase64) throw new Error("Missing prepared transaction")
-        tx = deserializeTx(action.txBase64)
-        if (tx.feePayer && !tx.feePayer.equals(publicKey)) {
-          throw new Error("This transaction was prepared for a different wallet. Ask Astrax again with this wallet connected.")
-        }
+        if (!action.tx) throw new Error("Missing prepared transaction")
+        txHash = await wallet.sendTransaction({
+          account: address,
+          chain: network.chain,
+          to: action.tx.to,
+          data: action.tx.data,
+          value: action.tx.value ? BigInt(action.tx.value) : undefined,
+          ...fees,
+        })
       }
-      // Fresh blockhash so a card that sat for a while still confirms.
-      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized")
-      tx.recentBlockhash = blockhash
-      tx.feePayer = publicKey
-      const sig = await sendTransaction(tx, connection, { signers })
-      setSignature(sig)
+      setHash(txHash)
       setPhase("mining")
-      const res = await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed")
-      if (res.value.err) throw new Error(`Transaction failed on-chain: ${JSON.stringify(res.value.err)}`)
-      if (id) localStorage.setItem(doneKey(id), JSON.stringify({ signature: sig, mint: mintAddr } satisfies DoneRecord))
+      const receipt = await client.waitForTransactionReceipt({ hash: txHash, timeout: 90_000 })
+      if (receipt.status !== "success") throw new Error("The transaction was mined but reverted on-chain.")
+      const created = receipt.contractAddress ?? undefined
+      if (created) setContract(created)
+      if (id) localStorage.setItem(doneKey(id), JSON.stringify({ hash: txHash, contract: created } satisfies DoneRecord))
       setPhase("done")
-      onDone?.(sig)
-    } catch (e: any) {
-      setErrMsg((e?.message || "Transaction rejected").slice(0, 160))
+      onDone?.(txHash)
+    } catch (e) {
+      setErrMsg(friendlyError(e, network))
       setPhase("error")
     }
-  }, [id, action, connection, publicKey, sendTransaction, connected, onDone])
+  }, [id, action, address, isConnected, walletChainId, network, onDone])
 
   if (phase === "done") {
     return (
       <div className="mt-3 w-full max-w-xl rounded-lg border border-green-300 dark:border-green-900/60 bg-green-50 dark:bg-green-950/30 p-3">
         <div className="flex items-center gap-2 text-sm font-medium text-green-700 dark:text-green-300">
-          <CheckCircle2 className="w-4 h-4" /> Confirmed
+          <CheckCircle2 className="w-4 h-4" /> Confirmed on {network.name}
         </div>
-        {createdMint && (
-          <div className="mt-1 text-xs font-mono text-green-700 dark:text-green-300 break-all">Mint: {createdMint}</div>
+        {contract && (
+          <a href={explorerToken(network, contract)} target="_blank" rel="noreferrer" className="mt-1 block text-xs font-mono text-green-700 dark:text-green-300 break-all hover:underline">
+            Contract: {contract}
+          </a>
         )}
-        {signature && (
-          <a href={explorerTx(signature)} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs text-green-700 dark:text-green-300 hover:underline">
-            View on Solana Explorer ({short(signature)}) <ArrowUpRight className="w-3 h-3" />
+        {hash && (
+          <a href={explorerTx(network, hash)} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs text-green-700 dark:text-green-300 hover:underline">
+            View on Arc Explorer ({short(hash)}) <ArrowUpRight className="w-3 h-3" />
           </a>
         )}
       </div>
@@ -129,7 +129,7 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
   if (phase === "error") {
     return (
       <div className="mt-3 w-full max-w-xl rounded-lg border border-red-300 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 p-3 text-sm text-red-700 dark:text-red-300 flex items-center justify-between gap-3">
-        <span className="break-all">{errMsg}</span>
+        <span className="break-words">{errMsg}</span>
         <button onClick={() => setPhase("idle")} className="underline flex-shrink-0 text-xs">retry</button>
       </div>
     )
@@ -140,7 +140,7 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
   if (signingMode === "auto" && phase === "idle") {
     return (
       <div className="mt-3 w-full max-w-xl rounded-lg border border-gray-200 dark:border-gray-800 px-3 py-2.5 text-xs text-gray-500 dark:text-gray-400">
-        {action.label} — prepared in wallet mode and not sent. Switch to <strong>Wallet</strong> signing to confirm it, or ask again to run it autonomously.
+        {action.label}: prepared in wallet mode and not sent. Switch to <strong>Wallet</strong> signing to confirm it, or ask again to run it autonomously.
       </div>
     )
   }
@@ -148,25 +148,28 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
   const busy = phase === "wallet" || phase === "mining"
   return (
     <div className="w-full max-w-xl">
-    {action.to && (
-      <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-800 px-3 py-2 text-xs">
-        <div className="text-gray-500 dark:text-gray-400">{action.action === "mintTokens" ? "Mint to" : "Recipient"}</div>
-        <div className="font-mono break-all mt-0.5">{action.to}</div>
-      </div>
-    )}
-    <button
-      onClick={execute}
-      disabled={busy}
-      className="mt-2 w-full flex items-center justify-center gap-2 rounded-lg bg-gray-900 dark:bg-white text-white dark:text-black px-4 py-3 text-sm font-semibold hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-70 transition-colors"
-    >
-      {phase === "mining" ? (
-        <><Loader2 className="w-4 h-4 animate-spin" /> Confirming on-chain…</>
-      ) : phase === "wallet" ? (
-        <><Loader2 className="w-4 h-4 animate-spin" /> Confirm in wallet…</>
-      ) : (
-        <><Zap className="w-4 h-4" /> {action.label}</>
+      {action.to && (
+        <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-800 px-3 py-2 text-xs">
+          <div className="text-gray-500 dark:text-gray-400">{action.action === "mintTokens" ? "Mint to" : "Recipient"}</div>
+          <div className="font-mono break-all mt-0.5">{action.to}</div>
+        </div>
       )}
-    </button>
+      {!network.isTestnet && (
+        <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">Arc Mainnet: this uses real USDC and can&apos;t be undone.</p>
+      )}
+      <button
+        onClick={execute}
+        disabled={busy}
+        className="mt-2 w-full flex items-center justify-center gap-2 rounded-lg bg-gray-900 dark:bg-white text-white dark:text-black px-4 py-3 text-sm font-semibold hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-70 transition-colors"
+      >
+        {phase === "mining" ? (
+          <><Loader2 className="w-4 h-4 animate-spin" /> Confirming on-chain…</>
+        ) : phase === "wallet" ? (
+          <><Loader2 className="w-4 h-4 animate-spin" /> Confirm in wallet…</>
+        ) : (
+          <><Zap className="w-4 h-4" /> {action.label}{walletChainId !== undefined && walletChainId !== network.id ? ` (switch to ${network.label})` : ""}</>
+        )}
+      </button>
     </div>
   )
 }

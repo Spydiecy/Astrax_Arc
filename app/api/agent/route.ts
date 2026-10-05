@@ -47,7 +47,8 @@ import {
 import { createPaymentLink as createPaymentLinkRecord, paymentLinkPath, paymentLinkUrl, verifyPaymentLink } from "@/lib/payment-links"
 import { requestOrigin } from "@/lib/origin"
 import { isOwner, NOT_OWNER } from "@/lib/auth"
-import { NextRequest } from "next/server"
+import { NextRequest, after } from "next/server"
+import { maybeRunDueSchedules } from "@/lib/scheduler"
 import { POST as generateImage } from "@/app/api/generate-image/route"
 import { encryptSecret } from "@/lib/crypto"
 
@@ -225,6 +226,8 @@ ${hasSigner ? "" : "- No secret key is loaded. Only if a write tool returns a no
 }
 
 export async function POST(req: Request) {
+  // Chat traffic doubles as a scheduler heartbeat (runs after the response).
+  after(() => maybeRunDueSchedules())
   // The domain this request came in on (localhost, preview, production…).
   const origin = requestOrigin(req)
   const body = await req.json()
@@ -737,7 +740,7 @@ export async function POST(req: Request) {
             amount: `${amount} ${token || NATIVE_SYMBOL}`,
             runAt: runAt.toLocaleString(),
             recurrence: recurrenceLabel,
-            note: `Astrax stores your key encrypted so it can send this on time, even if you close the app (${CLUSTER}).`,
+            note: `Sent within about a minute of the time while Astrax is open anywhere, and within the hour otherwise. Your key is stored encrypted for this (${CLUSTER}).`,
           }
         },
       }),

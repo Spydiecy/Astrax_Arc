@@ -14,7 +14,7 @@ import { PromptMarquee } from '@/components/blocks/prompt-marquee'
 
 const FEATURES: { icon: LucideIcon; title: string; body: string }[] = [
     { icon: Send, title: 'Chat to act on-chain', body: 'Send SOL or any SPL token, and create tokens and 1-of-1 NFTs with on-chain names and metadata. Pay saved contacts by name.' },
-    { icon: CalendarClock, title: 'Scheduled payments', body: 'One-off or recurring transfers, like a weekly allowance or a monthly salary, sent on time even when you close the app.' },
+    { icon: CalendarClock, title: 'Scheduled payments', body: 'One-off or recurring transfers, like a weekly allowance or a monthly salary, sent automatically, even after you close the app.' },
     { icon: Link2, title: 'Payment links that track themselves', body: 'Share a link or Solana Pay QR code. Astrax spots the payment on-chain and marks the link paid, with the transaction.' },
     { icon: ShieldCheck, title: 'Explain anything', body: 'Paste a transaction, wallet, token or program and get a plain-English breakdown with risk flags before you trust it.' },
     { icon: Wallet, title: 'Your keys, your choice', body: 'Approve every transaction in your own wallet, or go hands-free with a devnet key. Your contacts, links and schedules are only visible to your wallet.' },

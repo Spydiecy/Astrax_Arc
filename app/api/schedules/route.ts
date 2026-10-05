@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server"
+import { NextResponse, after } from "next/server"
+import { maybeRunDueSchedules } from "@/lib/scheduler"
 import { listSchedulesByOwner, cancelSchedule } from "@/lib/db"
 import { NATIVE_SYMBOL, isValidAddress } from "@/lib/solana"
 import { isOwner, NOT_OWNER } from "@/lib/auth"
@@ -11,6 +12,7 @@ export async function GET(req: Request) {
   const owner = new URL(req.url).searchParams.get("owner") || ""
   if (!isValidAddress(owner)) return NextResponse.json({ schedules: [] })
   if (!isOwner(req, owner)) return NextResponse.json(NOT_OWNER, { status: 401 })
+  after(() => maybeRunDueSchedules())
   const rows = (await listSchedulesByOwner(owner)).map((r) => ({
     id: r.id,
     recipient: r.recipient,

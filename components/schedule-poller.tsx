@@ -2,18 +2,24 @@
 
 import { useEffect } from "react"
 
-// Dev convenience: ping the cron executor every minute so scheduled payments fire
-// locally while the app is open. In production, Vercel Cron (vercel.json) drives
-// /api/cron/execute instead (and this poller stays idle).
+// Heartbeat: while any Astrax page is open, nudge the scheduler about once a
+// minute so due payments go out on time. The server throttles this to one run
+// per 30s across everyone, so many open tabs cost almost nothing. Vercel Cron
+// (hourly) covers the times when nobody has the app open.
+const EVERY_MS = 60_000
+
 export function SchedulePoller() {
   useEffect(() => {
-    if (process.env.NODE_ENV === "production") return
     const tick = () => {
-      fetch("/api/cron/execute").catch(() => {})
+      fetch("/api/scheduler/tick", { method: "POST", keepalive: true }).catch(() => {})
     }
-    tick()
-    const t = setInterval(tick, 60_000)
-    return () => clearInterval(t)
+    // Spread tabs out a little instead of all firing on the same second.
+    const first = setTimeout(tick, 2_000 + Math.random() * 8_000)
+    const t = setInterval(tick, EVERY_MS)
+    return () => {
+      clearTimeout(first)
+      clearInterval(t)
+    }
   }, [])
   return null
 }

@@ -2,6 +2,7 @@
 
 import { CredentialsProvider } from "@/contexts/CredentialsContext"
 import { OwnerSessionProvider } from "@/contexts/OwnerSessionContext"
+import { SchedulePoller } from "@/components/schedule-poller"
 import { ThemeProvider } from "@/components/ui/theme-provider"
 import { ConnectionProvider, WalletProvider } from "@solana/wallet-adapter-react"
 import { WalletModalProvider } from "@solana/wallet-adapter-react-ui"
@@ -19,7 +20,10 @@ export function Providers({ children }: { children: React.ReactNode }) {
         <WalletProvider wallets={WALLETS} autoConnect>
           <WalletModalProvider>
             <CredentialsProvider>
-              <OwnerSessionProvider>{children}</OwnerSessionProvider>
+              <OwnerSessionProvider>
+                <SchedulePoller />
+                {children}
+              </OwnerSessionProvider>
             </CredentialsProvider>
           </WalletModalProvider>
         </WalletProvider>

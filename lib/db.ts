@@ -68,6 +68,13 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS rate_limits (key TEXT PRIMARY KEY, window_start INTEGER NOT NULL, count INTEGER NOT NULL)`,
 ]
 
+// Columns added after a table first shipped. ALTER TABLE fails harmlessly if the
+// column already exists, so these are safe to run on every start.
+const MIGRATIONS = [
+  // When a run claims a scheduled payment, so two runs can never send it twice.
+  `ALTER TABLE schedules ADD COLUMN locked_until INTEGER NOT NULL DEFAULT 0`,
+]
+
 function makeClient(): Client {
   const url = process.env.TURSO_DATABASE_URL?.trim()
   if (url) return createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN?.trim() || undefined })
@@ -87,6 +94,13 @@ function db(): Promise<Client> {
     ready = (async () => {
       const c = makeClient()
       await c.batch(SCHEMA, "write")
+      for (const sql of MIGRATIONS) {
+        try {
+          await c.execute(sql)
+        } catch (e: any) {
+          if (!/duplicate column/i.test(String(e?.message))) throw e
+        }
+      }
       return c
     })()
     ready.catch(() => { ready = null }) // retry on the next call if setup failed
@@ -194,13 +208,38 @@ export function listSchedulesByOwner(owner: string): Promise<ScheduleRow[]> {
   return all<ScheduleRow>(`SELECT ${PUBLIC_COLS} FROM schedules WHERE owner = ? ORDER BY created_at DESC`, [owner])
 }
 
-/** Due active jobs (includes enc_key — cron use only). */
-export function getDueSchedules(now: number): Promise<(ScheduleRow & { enc_key: string })[]> {
-  return all(`SELECT * FROM schedules WHERE status = 'active' AND next_run <= ? ORDER BY next_run ASC`, [now])
+/** Due active jobs (includes enc_key — scheduler use only). */
+export function getDueSchedules(now: number): Promise<(ScheduleRow & { enc_key: string; locked_until: number })[]> {
+  return all(`SELECT * FROM schedules WHERE status = 'active' AND next_run <= ? ORDER BY next_run ASC LIMIT 25`, [now])
 }
 
-const RUN_FIELDS = new Set(["next_run", "remaining", "status", "last_tx", "note"])
-export async function updateAfterRun(id: string, patch: { next_run?: number; remaining?: number; status?: string; last_tx?: string; note?: string }): Promise<void> {
+/**
+ * Atomically claim a due job for one run. Only one caller can win; everyone else
+ * gets false. The claim is released by updateAfterRun (locked_until → 0).
+ */
+export async function claimSchedule(id: string, now: number, leaseMs: number): Promise<boolean> {
+  return (await run(
+    `UPDATE schedules SET locked_until = ? WHERE id = ? AND status = 'active' AND next_run <= ? AND locked_until = 0`,
+    [now + leaseMs, id, now],
+  )) > 0
+}
+
+/**
+ * A claim that expired without being released means a run was cut off mid-send.
+ * The payment may or may not have gone out, so never retry it automatically:
+ * mark it failed for the owner to check. Returns how many were marked.
+ */
+export async function failStaleClaims(now: number): Promise<number> {
+  return run(
+    `UPDATE schedules SET status = 'failed', enc_key = '', locked_until = 0,
+       note = 'Interrupted while sending. Check your wallet history before rescheduling.'
+     WHERE status = 'active' AND locked_until > 0 AND locked_until < ?`,
+    [now],
+  )
+}
+
+const RUN_FIELDS = new Set(["next_run", "remaining", "status", "last_tx", "note", "locked_until"])
+export async function updateAfterRun(id: string, patch: { next_run?: number; remaining?: number; status?: string; last_tx?: string; note?: string; locked_until?: number }): Promise<void> {
   const entries = Object.entries(patch).filter(([k, v]) => RUN_FIELDS.has(k) && v !== undefined)
   if (!entries.length) return
   await run(

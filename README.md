@@ -85,10 +85,12 @@ project's environment variables. Tables are created automatically on first reque
 Without a database URL the app refuses to start its database on Vercel, rather than
 losing data.
 
-**Cron:** Vercel's Hobby plan only allows cron jobs once a day, while `vercel.json`
-asks for every minute (Pro plan). On Hobby, remove the `crons` entry and call
-`GET /api/cron/execute` every minute from an external scheduler (e.g. cron-job.org or
-GitHub Actions), sending the header `Authorization: Bearer <CRON_SECRET>`.
+**Cron:** Vercel's Hobby plan only allows cron jobs once a day, so `vercel.json` runs
+`/api/cron/execute` daily as a safety net. For on-time payments, call it every minute
+from a free external scheduler such as [cron-job.org](https://cron-job.org):
+`GET https://<your-domain>/api/cron/execute` with the header
+`Authorization: Bearer <CRON_SECRET>`. On the Pro plan you can set the schedule in
+`vercel.json` to `* * * * *` instead.
 
 ---
 

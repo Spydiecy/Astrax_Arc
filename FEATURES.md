@@ -70,8 +70,8 @@ that turns chat into on-chain actions.
 - One-time or recurring ("pay alice 1 SOL every week, 4 times"), autonomous mode only.
 - The key is AES-256-GCM encrypted (`SCHEDULER_ENC_KEY`) in the database, used by
   `/api/cron/execute`, and wiped once the job finishes or is cancelled.
-- In dev the open app triggers the job every minute. In production, Vercel Cron calls it
-  with `CRON_SECRET`.
+- In dev the open app triggers the job every minute. In production an external scheduler
+  calls it every minute with `CRON_SECRET` (Vercel Cron also runs it daily as a backup).
 - **Sidebar "Scheduled" tab:** list and cancel (owner only).
 
 ## Contacts

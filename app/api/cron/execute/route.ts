@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "crypto"
 import { NextResponse } from "next/server"
 import { PublicKey, sendAndConfirmTransaction } from "@solana/web3.js"
 import { getConnection, findToken, NATIVE_SENTINEL, isNativeToken } from "@/lib/solana"
@@ -57,12 +58,17 @@ async function run() {
   return { ran: results.length, results, at: new Date(now).toISOString() }
 }
 
+const sha = (s: string) => createHash("sha256").update(s).digest()
+
 function authorized(req: Request): boolean {
   if (process.env.NODE_ENV !== "production") return true
   const secret = process.env.CRON_SECRET
-  if (!secret) return false
-  const auth = req.headers.get("authorization") || req.headers.get("x-cron-secret") || ""
-  return auth === `Bearer ${secret}` || auth === secret
+  // Refuse to run with a missing or guessable secret.
+  if (!secret || secret.length < 32) return false
+  const header = req.headers.get("authorization") || req.headers.get("x-cron-secret") || ""
+  const given = header.startsWith("Bearer ") ? header.slice(7) : header
+  // Constant-time compare (hashing first makes the lengths equal).
+  return timingSafeEqual(sha(given), sha(secret))
 }
 
 export async function GET(req: Request) {

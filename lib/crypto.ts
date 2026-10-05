@@ -7,6 +7,10 @@ let warned = false
 
 function key32(): Buffer {
   const secret = process.env.SCHEDULER_ENC_KEY
+  if (!secret && process.env.NODE_ENV === "production") {
+    // Never encrypt real keys with the public dev fallback.
+    throw new Error("SCHEDULER_ENC_KEY is not set — refusing to store or use scheduling keys in production.")
+  }
   if (!secret) {
     if (!warned) {
       console.warn("[astrax] SCHEDULER_ENC_KEY not set — using an insecure dev fallback. Set it before deploying.")

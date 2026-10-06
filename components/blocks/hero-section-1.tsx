@@ -13,7 +13,7 @@ import { TechStack } from '@/components/blocks/tech-stack'
 import { PromptMarquee } from '@/components/blocks/prompt-marquee'
 
 const FEATURES: { icon: LucideIcon; title: string; body: string }[] = [
-    { icon: Send, title: 'Chat to act on-chain', body: 'Send USDC, EURC or any ERC-20, and deploy your own ERC-20 tokens and 1-of-1 NFTs in one message. Pay saved contacts by name.' },
+    { icon: Send, title: 'Chat to act on-chain', body: 'Send USDC, EURC or any ERC-20, deploy your own ERC-20 tokens, or attach an image and mint it as a 1-of-1 NFT with its metadata on IPFS. Pay saved contacts by name.' },
     { icon: CalendarClock, title: 'Scheduled payments', body: 'One-off or recurring transfers, like a weekly allowance or a monthly salary, sent automatically, even after you close the app.' },
     { icon: Link2, title: 'Payment links that track themselves', body: 'Share a link or QR code. Astrax spots the USDC payment on-chain and marks the link paid, with the transaction.' },
     { icon: ShieldCheck, title: 'Explain anything', body: 'Paste a transaction, wallet, token or contract and get a plain-English breakdown with risk flags before you trust it.' },
@@ -32,7 +32,7 @@ const STACK_NOTES: { title: string; body: string }[] = [
 const PLAN_ITEMS = [
     'AI chat with copy, edit and regenerate',
     'USDC, EURC & ERC-20 transfers',
-    'ERC-20 token & NFT creation',
+    'ERC-20 token & NFT creation with image upload',
     'Scheduled & recurring payments',
     'Tracked payment links with QR codes',
     'Per-wallet contacts',

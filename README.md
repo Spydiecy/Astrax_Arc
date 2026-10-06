@@ -83,7 +83,7 @@ returning users keep their last choice.
 | | Feature | What it does |
 |---|---|---|
 | 💸 | **Chat to transact** | Send USDC, EURC or any ERC-20 to an address or a saved contact name. |
-| 🪙 | **Create tokens and NFTs** | Deploys an Astrax ERC-20 (you own it and can mint more) or a 1-of-1 ERC-721 with IPFS metadata. |
+| 🪙 | **Create tokens and NFTs** | Deploys an Astrax ERC-20 (you own it and can mint more), or a 1-of-1 ERC-721 from an image you upload (PNG, JPG, GIF or WebP), with standard metadata on IPFS. |
 | 🗓️ | **Scheduled payments** | One-off or recurring transfers that go out on their own, even after you close the tab. |
 | 🔗 | **Self-tracking payment links** | Share a link or QR code. Astrax finds the USDC payment on-chain and marks it paid. |
 | 🛡️ | **Explain anything** | Paste a transaction, wallet, token or contract and get a plain-English breakdown with risk flags, including look-alike token warnings. |
@@ -257,8 +257,9 @@ flowchart LR
   jobs are claimed atomically, and an interrupted send is never retried.
 - **Payments are verified on-chain.** A payment link is only marked paid after the
   server re-reads the transaction from Arc; the payer's browser is never trusted.
-- **Hardened endpoints.** Uploads and payment reports are rate-limited, the cron
-  endpoint uses a constant-time secret check, and model output is rendered without raw HTML.
+- **Hardened endpoints.** Uploads accept images only (checked by their real bytes) and,
+  like payment reports, are rate-limited. The cron endpoint uses a constant-time secret
+  check, and model output is rendered without raw HTML.
 
 ---
 
@@ -277,7 +278,7 @@ app/
     schedules/          Owner-only scheduled payments
     scheduler/tick/     Throttled runner triggered by open tabs
     cron/execute/       Runner triggered by Vercel Cron
-    upload/             IPFS uploads via Pinata
+    upload/             Image uploads to IPFS via Pinata
 components/             Chat UI, sidebar, network switcher, modals, charts, tx buttons
 contexts/               Network, signing mode and owner session state
 contracts/              AstraxToken.sol, AstraxNFT.sol
@@ -292,6 +293,7 @@ lib/
   db.ts                 libSQL schema and queries
   auth.ts · crypto.ts   Sessions, signatures, key encryption
   explain.ts            Transaction / address risk analysis
+  images.ts · pinata.ts Image checks, IPFS uploads and NFT metadata
 ```
 
 ---

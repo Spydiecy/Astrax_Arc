@@ -10,7 +10,7 @@ import { estimateArcFees, explorerTx, explorerToken, getPublicClient, resolveNet
 import { buildDeployNFT, buildDeployToken, friendlyError, type PreparedTx } from "@/lib/evm"
 
 export interface PendingAction {
-  action: "sendNative" | "sendToken" | "deployToken" | "deployNFT" | "mintTokens"
+  action: "sendNative" | "sendToken" | "deployToken" | "deployNFT" | "mintTokens" | "deployContract" | "callContract"
   label: string
   /** Network the agent prepared this for; the wallet is switched to it before signing. */
   network?: NetworkKey
@@ -21,6 +21,11 @@ export interface PendingAction {
   deploy?:
     | { type: "token"; name: string; symbol: string; decimals: number; supply: string }
     | { type: "nft"; name: string; symbol: string; uri: string }
+  /** Custom contract compiled by the agent; its bytecode is fetched from /api/contracts/<id>. */
+  contractId?: string
+  contractName?: string
+  functions?: string[]
+  gasEstimate?: string
   to?: string
   token?: string
   symbol?: string
@@ -80,6 +85,14 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
       if (action.deploy) {
         const req = action.deploy.type === "token" ? buildDeployToken(action.deploy) : buildDeployNFT(action.deploy)
         txHash = await wallet.deployContract({ account: address, chain: network.chain, abi: req.abi, bytecode: req.bytecode, args: req.args, ...fees })
+      } else if (action.contractId) {
+        const res = await fetch(`/api/contracts/${encodeURIComponent(action.contractId)}`, { cache: "no-store" })
+        const j = await res.json().catch(() => ({}))
+        if (!res.ok || !j.deployData) throw new Error(j.error || "This deployment is no longer available. Ask Astrax to deploy it again.")
+        if (String(j.owner).toLowerCase() !== address.toLowerCase()) {
+          throw new Error("This contract was prepared for a different wallet. Ask Astrax again with this wallet connected.")
+        }
+        txHash = await wallet.sendTransaction({ account: address, chain: network.chain, data: j.deployData, ...fees })
       } else {
         if (!action.tx) throw new Error("Missing prepared transaction")
         txHash = await wallet.sendTransaction({
@@ -96,6 +109,15 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
       const receipt = await client.waitForTransactionReceipt({ hash: txHash, timeout: 90_000 })
       if (receipt.status !== "success") throw new Error("The transaction was mined but reverted on-chain.")
       const created = receipt.contractAddress ?? undefined
+      // Let the server record the address (it re-checks the deployment on-chain),
+      // so the agent can call this contract's functions by name afterwards.
+      if (action.contractId && created) {
+        await fetch(`/api/contracts/${encodeURIComponent(action.contractId)}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ hash: txHash }),
+        }).catch(() => {})
+      }
       if (created) setContract(created)
       if (id) localStorage.setItem(doneKey(id), JSON.stringify({ hash: txHash, contract: created } satisfies DoneRecord))
       setPhase("done")
@@ -170,9 +192,26 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
   }
 
   const busy = phase === "wallet" || phase === "mining"
+  const contractPreview = action.action === "deployContract" ? (
+    <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-800 px-3 py-2 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-medium">{action.contractName}</span>
+        {action.gasEstimate && <span className="text-gray-500">~{Number(action.gasEstimate).toLocaleString()} gas</span>}
+      </div>
+      {!!action.functions?.length && (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {action.functions.map((f) => (
+            <span key={f} className="font-mono px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800">{f}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  ) : null
+
   return (
     <div className="w-full max-w-xl">
       {nftPreview}
+      {contractPreview}
       {action.to && (
         <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-800 px-3 py-2 text-xs">
           <div className="text-gray-500 dark:text-gray-400">{action.action === "mintTokens" ? "Mint to" : "Recipient"}</div>

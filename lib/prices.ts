@@ -1,9 +1,9 @@
 // Price helpers for Astrax. Current prices come from the Coinbase spot API:
 //   GET https://api.coinbase.com/v2/prices/<SYMBOL>-USD/spot
 //   -> { "data": { "amount": "0.999795", "base": "USDT", "currency": "USD" } }
-// Historical candles use Coinbase's Exchange product candles when a market exists;
-// otherwise we build a short indicative series from the current spot price (useful
-// for tokens that have no live Coinbase market).
+// Historical candles come from Coinbase's Exchange product candles when a market
+// exists, otherwise from CoinGecko's OHLC (this is what covers USDC and EURC, which
+// have no Coinbase USD market). Nothing is ever made up: no data means no chart.
 
 export interface Candle {
   timestamp: number
@@ -21,25 +21,20 @@ const priceSymbol = (symbol: string) => {
   return PRICE_ALIAS[s] ?? s
 }
 
+/** CoinGecko ids for the assets Astrax knows about on Arc. */
+export const COINGECKO_IDS: Record<string, string> = {
+  USDC: "usd-coin",
+  EURC: "euro-coin",
+  WETH: "ethereum",
+  ETH: "ethereum",
+  CIRBTC: "bitcoin",
+  BTC: "bitcoin",
+}
+
 /** Current USD spot price for a symbol via Coinbase, e.g. spotPriceUSD("USDC"). */
 export async function spotPriceUSD(symbol: string): Promise<number | null> {
   try {
     const res = await fetch(`https://api.coinbase.com/v2/prices/${priceSymbol(symbol)}-USD/spot`, {
-      headers: { accept: "application/json" },
-    })
-    if (!res.ok) return null
-    const j = await res.json()
-    const amount = parseFloat(j?.data?.amount)
-    return Number.isFinite(amount) ? amount : null
-  } catch {
-    return null
-  }
-}
-
-/** Historical spot price on a given date (Coinbase supports ?date=YYYY-MM-DD). */
-async function spotPriceOnDate(symbol: string, date: string): Promise<number | null> {
-  try {
-    const res = await fetch(`https://api.coinbase.com/v2/prices/${priceSymbol(symbol)}-USD/spot?date=${date}`, {
       headers: { accept: "application/json" },
     })
     if (!res.ok) return null
@@ -74,58 +69,39 @@ export async function dailyCandles(symbol: string, days: number): Promise<Candle
 }
 
 /**
- * Build an indicative candle series when no real market exists.
- * Tries Coinbase historical daily spot (open=close per day); if that fails,
- * derives a gentle series from the current spot. Returns null if no price at all.
+ * Daily candles from CoinGecko's OHLC endpoint. It returns 4-hour candles for short
+ * ranges (and has no volume), so they are folded into UTC days. Used for assets
+ * Coinbase doesn't list, notably the USDC / EURC stablecoins.
  */
-export async function indicativeCandles(symbol: string, days: number): Promise<Candle[] | null> {
-  const today = new Date()
-  const dayMs = 86_400_000
-
-  // Attempt real historical daily spot prices.
-  const dates: string[] = []
-  for (let i = days; i >= 0; i--) {
-    dates.push(new Date(today.getTime() - i * dayMs).toISOString().slice(0, 10))
-  }
-  const prices = await Promise.all(dates.map((d) => spotPriceOnDate(symbol, d)))
-  const haveHistory = prices.filter((p) => p != null).length >= 2
-
-  if (haveHistory) {
-    const candles: Candle[] = []
-    for (let i = 1; i < prices.length; i++) {
-      const open = prices[i - 1]
-      const close = prices[i]
-      if (open == null || close == null) continue
-      candles.push({
-        timestamp: today.getTime() - (days - i) * dayMs,
-        open,
-        close,
-        high: Math.max(open, close),
-        low: Math.min(open, close),
-        volume: 0,
-      })
-    }
-    if (candles.length >= 2) return candles
-  }
-
-  // Last resort: synthesize a small series around the current spot.
-  const spot = await spotPriceUSD(symbol)
-  if (spot == null) return null
-  const out: Candle[] = []
-  let price = spot
-  for (let i = days - 1; i >= 0; i--) {
-    const open = price
-    const drift = (Math.random() - 0.5) * 0.03 * spot
-    const close = Math.max(spot * 0.5, open + drift)
-    out.push({
-      timestamp: today.getTime() - i * dayMs,
-      open,
-      close,
-      high: Math.max(open, close) * (1 + Math.random() * 0.01),
-      low: Math.min(open, close) * (1 - Math.random() * 0.01),
-      volume: 0,
+export async function coingeckoCandles(symbol: string, days: number): Promise<Candle[] | null> {
+  const id = COINGECKO_IDS[symbol.trim().toUpperCase()]
+  if (!id) return null
+  try {
+    const res = await fetch(`https://api.coingecko.com/api/v3/coins/${id}/ohlc?vs_currency=usd&days=${Math.min(30, Math.max(2, days))}`, {
+      headers: { accept: "application/json" },
     })
-    price = close
+    if (!res.ok) return null
+    const rows = (await res.json()) as number[][]
+    if (!Array.isArray(rows) || rows.length === 0) return null
+    const byDay = new Map<number, Candle>()
+    for (const [t, o, h, l, c] of rows) {
+      const day = Math.floor(t / 86_400_000) * 86_400_000
+      const cur = byDay.get(day)
+      if (!cur) byDay.set(day, { timestamp: day, open: o, high: h, low: l, close: c, volume: 0 })
+      else {
+        cur.high = Math.max(cur.high, h)
+        cur.low = Math.min(cur.low, l)
+        cur.close = c // rows are in time order, so the last one closes the day
+      }
+    }
+    const out = [...byDay.values()].sort((a, b) => a.timestamp - b.timestamp).slice(-days)
+    return out.length >= 2 ? out : null
+  } catch {
+    return null
   }
-  return out
+}
+
+/** Daily candles for a symbol: Coinbase first, then CoinGecko. null when neither has a market. */
+export async function priceCandles(symbol: string, days: number): Promise<Candle[] | null> {
+  return (await dailyCandles(symbol, days)) ?? (await coingeckoCandles(symbol, days))
 }

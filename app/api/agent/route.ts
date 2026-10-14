@@ -2,6 +2,8 @@ import { streamText, tool } from "ai"
 import { createMistral } from "@ai-sdk/mistral"
 import { createGoogleGenerativeAI } from "@ai-sdk/google"
 import { z } from "zod"
+import { randomBytes } from "crypto"
+import { encodeDeployData, encodeFunctionData, keccak256, type Abi } from "viem"
 import {
   NATIVE_SYMBOL,
   USDC_ADDRESS,
@@ -28,6 +30,7 @@ import {
   buildNativeTransfer,
   buildTokenTransfer,
   deployPrepared,
+  deployData,
   formatAmount,
   formatFixed,
   friendlyError,
@@ -38,10 +41,12 @@ import {
   type PreparedTx,
   type ResolvedToken,
 } from "@/lib/evm"
-import { spotPriceUSD, dailyCandles, indicativeCandles } from "@/lib/prices"
+import { spotPriceUSD, priceCandles, COINGECKO_IDS } from "@/lib/prices"
 import { uploadJSONToIPFS, isPinataConfigured, ipfsCid, gatewayUrl } from "@/lib/pinata"
 import { IMAGE_FORMATS_LABEL } from "@/lib/images"
 import { explainTarget } from "@/lib/explain"
+import { compileSolidity } from "@/lib/solc"
+import { abiFunctions, coerceArgs, describeFunction, isReadOnly, pickFunction, stringifyResult } from "@/lib/abi-args"
 import { recentActivity } from "@/lib/activity"
 import {
   insertSchedule,
@@ -55,6 +60,11 @@ import {
   cleanContactName,
   addAsset,
   listAssets,
+  insertContract,
+  getContractByAddress,
+  findContractByName,
+  listContractsByOwner,
+  rateLimited,
 } from "@/lib/db"
 import { createPaymentLink as createPaymentLinkRecord, paymentLinkPath, paymentLinkUrl, verifyPaymentLink } from "@/lib/payment-links"
 import { requestOrigin } from "@/lib/origin"
@@ -63,6 +73,8 @@ import { NextRequest, after } from "next/server"
 import { maybeRunDueSchedules } from "@/lib/scheduler"
 import { POST as generateImage } from "@/app/api/generate-image/route"
 import { encryptSecret } from "@/lib/crypto"
+
+type AbiConstructor = Extract<Abi[number], { type: "constructor" }>
 
 export const runtime = "nodejs"
 export const maxDuration = 60
@@ -143,16 +155,6 @@ function parseWhen(when: string): Date | null {
   return isNaN(parsed.getTime()) ? null : parsed
 }
 
-// CoinGecko ids for the assets Astrax knows about on Arc.
-const COINGECKO_IDS: Record<string, string> = {
-  USDC: "usd-coin",
-  EURC: "euro-coin",
-  WETH: "ethereum",
-  ETH: "ethereum",
-  CIRBTC: "bitcoin",
-  BTC: "bitcoin",
-}
-
 async function usdPrice(symbol: string): Promise<number | null> {
   const spot = await spotPriceUSD(symbol)
   if (spot != null) return spot
@@ -193,7 +195,9 @@ Guidance:
 - "create token MoonCoin MOON supply 1000000" → deployToken (deploys an ERC-20 contract; the creator owns it and can mint more)
 - "create an NFT / mint an NFT" → deployNFT (deploys a 1-of-1 ERC-721)
 - "mint 500 more <token address>" → mintTokens (only works for Astrax tokens the user owns)
-- Arbitrary smart-contract deployment from source is NOT supported from chat: say so briefly and offer token/NFT creation instead.
+- "create/deploy a counter / voting / escrow / any smart contract" → deployContract. YOU write the complete Solidity source: start with "// SPDX-License-Identifier: MIT" and "pragma solidity ^0.8.20;", keep it small and self-contained (only @openzeppelin/contracts imports work), no placeholders. If it fails to compile, read the error, fix the source and call deployContract again. For a plain "counter" just use the simple Counter pattern with no imports. For plain ERC-20 tokens or NFTs prefer deployToken / deployNFT.
+- "increment the counter / call <fn> on <address> / read <value> from <contract>" → callContract. Pass the contract's address, or just its name ("Counter") when the user says "the counter"; Astrax finds it among their deployed contracts. "my contracts / what have I deployed" → listContracts (the sidebar also has a Smart contracts tab).
+- Arc specifics for contracts: the native currency is USDC (msg.value is USDC with 18 decimals), block.prevrandao is always 0 (no on-chain randomness), sending value to address(0) reverts.
 - "schedule 2 USDC to alice tomorrow at 5pm" → scheduleTransfer (one-time)
 - "pay alice 500 USDC every month for a year / salary" → scheduleTransfer with every:"monthly", occurrences:12
 - "show my scheduled payments" → listSchedules ; "cancel schedule <id>" → cancelSchedule
@@ -333,12 +337,64 @@ export async function POST(req: Request) {
     return freshAttached.length > 0 ? freshAttached[freshAttached.length - 1] : null
   }
 
+  /**
+   * Remember a contract Astrax deploys (token, NFT or custom) with its ABI, so it shows
+   * in the Smart contracts tab and the agent can call it later. Wallet-mode records stay
+   * pending (no address) until the browser reports the transaction and the server
+   * confirms it on-chain (see app/api/contracts/[id]).
+   */
+  const rememberDeploy = async (
+    req: { abi: Abi; bytecode: `0x${string}`; args: readonly unknown[] },
+    name: string,
+    deployer: `0x${string}`,
+    done?: { address: `0x${string}`; hash: `0x${string}` },
+  ): Promise<string | null> => {
+    try {
+      const id = `ct_${randomBytes(8).toString("hex")}`
+      await insertContract({
+        id,
+        owner: addrKey(deployer),
+        network: network.key,
+        name,
+        abi: JSON.stringify(req.abi),
+        deploy_hash: keccak256(encodeDeployData({ abi: req.abi, bytecode: req.bytecode, args: req.args })),
+        deploy_data: null, // the browser rebuilds token/NFT deployments itself
+        address: done?.address ?? null,
+        tx_hash: done?.hash ?? null,
+      })
+      return id
+    } catch (e) {
+      console.error("[rememberDeploy]", (e as Error)?.message)
+      return null // never block the deployment itself on bookkeeping
+    }
+  }
+
   /** A transaction prepared for the browser wallet (wallet mode). */
   const walletAction = (fields: Record<string, unknown>) => ({ kind: "action", network: network.key, chainId: network.id, ...fields })
 
+  // The user's own deployed contracts, so "increment the counter" goes to callContract
+  // with the right contract instead of the model guessing a tool.
+  let contractsSection = ""
+  if (verifiedOwner) {
+    try {
+      const mine = await listContractsByOwner(verifiedOwner, network.key, 8)
+      if (mine.length > 0) {
+        const lines = mine.map((r) => {
+          const fns = abiFunctions(JSON.parse(r.abi) as Abi).map(describeFunction).join("; ")
+          return `- ${r.name} at ${r.address}: ${fns}`.slice(0, 420)
+        })
+        contractsSection = `\n\n## The user's deployed contracts on ${network.name} (newest first)
+${lines.join("\n")}
+Any request to read from, call, run or use one of these (including "the counter", "increment", "what's the count") MUST use callContract with address set to the contract's name or address and function set to the function name. Never use getTokenBalance, explain or getTransaction for that. The address is the contract being called, never a recipient or an argument; arguments go in args.`
+      }
+    } catch {
+      /* the list is a convenience; the tools still work without it */
+    }
+  }
+
   const result = await streamText({
     model,
-    system: `${systemPrompt(network.name, network.isTestnet, network.explorerUrl)}\n\n${signingSection(signingMode, Boolean(ownerAddress))}`,
+    system: `${systemPrompt(network.name, network.isTestnet, network.explorerUrl)}\n\n${signingSection(signingMode, Boolean(ownerAddress))}${contractsSection}`,
     messages,
     maxSteps: 6,
     tools: {
@@ -627,11 +683,14 @@ export async function POST(req: Request) {
           const params = { name: name.trim().slice(0, 64), symbol: symbol.trim().slice(0, 16), decimals: decimals ?? 18, supply: clean }
           if (signingMode === "wallet") {
             if (!ownerAddress) return noSigner()
-            return walletAction({ action: "deployToken", deploy: { type: "token", ...params }, ...params, label: `Create token ${params.name} (${params.symbol})` })
+            const contractId = await rememberDeploy(buildDeployToken(params), params.name, ownerAddress)
+            return walletAction({ action: "deployToken", contractId: contractId ?? undefined, deploy: { type: "token", ...params }, ...params, label: `Create token ${params.name} (${params.symbol})` })
           }
           if (!wallet || !signer) return noSigner()
           try {
-            const { hash, address } = await deployPrepared(signer, client, buildDeployToken(params))
+            const req = buildDeployToken(params)
+            const { hash, address } = await deployPrepared(signer, client, req)
+            await rememberDeploy(req, params.name, wallet.address, { address, hash })
             return { kind: "deploy", what: "token", name: params.name, symbol: params.symbol, supply: clean, contractAddress: address, contractUrl: explorerToken(network, address), hash, explorerUrl: explorerTx(network, hash) }
           } catch (e) {
             return fail("Create failed", e)
@@ -677,14 +736,202 @@ export async function POST(req: Request) {
           const params = { name: cleanName, symbol: cleanSymbol, uri: metadataUri }
           if (signingMode === "wallet") {
             if (!ownerAddress) return noSigner()
-            return walletAction({ action: "deployNFT", deploy: { type: "nft", ...params }, ...params, image: imageUsed, metadataUri, label: `Create NFT ${params.name} (${params.symbol})` })
+            const contractId = await rememberDeploy(buildDeployNFT(params), params.name, ownerAddress)
+            return walletAction({ action: "deployNFT", contractId: contractId ?? undefined, deploy: { type: "nft", ...params }, ...params, image: imageUsed, metadataUri, label: `Create NFT ${params.name} (${params.symbol})` })
           }
           if (!wallet || !signer) return noSigner()
           try {
-            const { hash, address } = await deployPrepared(signer, client, buildDeployNFT(params))
+            const req = buildDeployNFT(params)
+            const { hash, address } = await deployPrepared(signer, client, req)
+            await rememberDeploy(req, params.name, wallet.address, { address, hash })
             return { kind: "deploy", what: "nft", name: params.name, symbol: params.symbol, image: imageUsed, metadataUri, contractAddress: address, contractUrl: explorerToken(network, address), hash, explorerUrl: explorerTx(network, hash) }
           } catch (e) {
             return fail("Create failed", e)
+          }
+        },
+      }),
+
+      deployContract: tool({
+        description: `Compile and deploy a custom Solidity smart contract on ${network.name}, e.g. a counter, voting, escrow or registry. You write the full source. Returns the address and the contract's functions. Compile errors come back with the failing line and a hint: fix the source and call again. Keep contracts SIMPLE and avoid imports unless needed (OpenZeppelin v5 only: Ownable needs \`Ownable(msg.sender)\`, there is no Counters.sol). A correct simple counter, for reference:
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Counter {
+    uint256 public count;
+    event Incremented(address indexed by, uint256 newCount);
+    function increment() external { count += 1; emit Incremented(msg.sender, count); }
+    function decrement() external { require(count > 0, "Already zero"); count -= 1; }
+    function reset() external { count = 0; }
+}`,
+        parameters: z.object({
+          source: z.string().describe("Complete Solidity source with an SPDX line and `pragma solidity ^0.8.20;`. Self-contained; only @openzeppelin/contracts imports are available."),
+          contractName: z.string().optional().describe("Which contract in the source to deploy. Defaults to the last one."),
+          constructorArgs: z.array(z.string()).optional().describe("Constructor arguments in order, each as a string (numbers as integers in base units, arrays as JSON)."),
+        }),
+        execute: async ({ source, contractName, constructorArgs }) => {
+          if (signingMode === "wallet" ? !ownerAddress : !wallet || !signer) return noSigner()
+          const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local"
+          if (await rateLimited(`compile:${ip}`, 60_000, 10)) return { error: "Too many compiles in a minute. Wait a moment and try again." }
+
+          const compiled = await compileSolidity(source, contractName?.trim() || undefined)
+          if (!compiled.ok) return { error: compiled.error }
+          const c = compiled.result
+
+          const ctor = c.abi.find((x): x is AbiConstructor => x.type === "constructor")
+          let data: `0x${string}`
+          try {
+            const args = coerceArgs(ctor?.inputs ?? [], constructorArgs ?? [])
+            data = encodeDeployData({ abi: c.abi, bytecode: c.bytecode, args })
+          } catch (e: any) {
+            return { error: `Constructor arguments: ${String(e?.shortMessage || e?.message || e).slice(0, 200)}` }
+          }
+
+          const deployer = (signingMode === "wallet" ? ownerAddress : wallet!.address) as `0x${string}`
+          // Dry run first: catches constructor reverts and shows the gas before anything is signed.
+          let gas: bigint
+          try {
+            gas = await client.estimateGas({ account: deployer, data })
+          } catch (e) {
+            return fail(`${c.contractName} would fail to deploy`, e)
+          }
+
+          const functions = abiFunctions(c.abi).map(describeFunction)
+          const id = `ct_${randomBytes(8).toString("hex")}`
+          const record = {
+            id,
+            owner: addrKey(deployer),
+            network: network.key,
+            name: c.contractName,
+            abi: JSON.stringify(c.abi),
+            deploy_hash: keccak256(data),
+          }
+          const summary = { contractName: c.contractName, functions, compiler: `solc ${c.compilerVersion}`, sizeBytes: c.runtimeBytes, gasEstimate: gas.toString(), warnings: c.warnings.length ? c.warnings : undefined }
+
+          if (signingMode === "wallet") {
+            // The bytecode stays on the server; the confirm button fetches it by id.
+            try {
+              await insertContract({ ...record, address: null, deploy_data: data, tx_hash: null })
+            } catch (e) {
+              console.error("[deployContract] couldn't save the deployment:", (e as Error)?.message)
+              return { error: "Couldn't prepare the deployment (database error). Try again in a moment." }
+            }
+            return walletAction({ action: "deployContract", contractId: id, ...summary, label: `Deploy ${c.contractName}` })
+          }
+          try {
+            const { hash, address } = await deployData(signer!, client, data)
+            // The contract is already live; if saving its ABI fails, the deploy result still returns.
+            await insertContract({ ...record, address, deploy_data: null, tx_hash: hash }).catch((e) =>
+              console.error("[deployContract] deployed but couldn't save the ABI:", (e as Error)?.message),
+            )
+            return { kind: "deploy", what: "contract", name: c.contractName, ...summary, contractAddress: address, contractUrl: explorerAddress(network, address), hash, explorerUrl: explorerTx(network, hash) }
+          } catch (e) {
+            return fail("Deploy failed", e)
+          }
+        },
+      }),
+
+      callContract: tool({
+        description: `Call a function on a deployed contract on ${network.name}. Read-only (view/pure) functions return their result right away; other functions send a transaction. Works with contracts deployed through Astrax by function name; for any other contract give the full signature, e.g. "count() view returns (uint256)".`,
+        parameters: z.object({
+          address: z.string().describe('Contract address, or the NAME of a contract the user deployed through Astrax (e.g. "Counter"). If the user doesn\'t give an address, pass the name.'),
+          function: z.string().describe('Function name (e.g. "increment"), or a full signature for contracts not deployed through Astrax'),
+          args: z.array(z.string()).optional().describe("Arguments in order, each as a string (integers in base units, arrays as JSON)."),
+          value: z.string().optional().describe("USDC to send with a payable function, e.g. 0.5"),
+        }),
+        execute: async ({ address, function: fnArg, args, value }) => {
+          // An address, an address inside text ("Counter (0x…)"), or the name of one of the user's contracts.
+          const embedded = address.match(/0x[0-9a-fA-F]{40}/)?.[0]
+          let target: `0x${string}`
+          if (isValidAddress(address)) target = normalizeAddress(address)
+          else if (embedded) target = normalizeAddress(embedded)
+          else {
+            if (!verifiedOwner) return ownerAddress ? NOT_OWNER : { error: `"${address}" isn't an address. Connect a wallet to use your deployed contracts by name.` }
+            const found = await findContractByName(verifiedOwner, network.key, address)
+            if (!found?.address) return { error: `You haven't deployed a contract called "${address}" on ${network.name}. Ask for "my contracts" to see them, or give an address.` }
+            target = normalizeAddress(found.address)
+          }
+          const code = await client.getCode({ address: target }).catch(() => undefined)
+          if (!code || code === "0x") return { error: `There's no contract at that address on ${network.name}.` }
+
+          const stored = await getContractByAddress(network.key, target)
+          const abi = stored ? (JSON.parse(stored.abi) as Abi) : null
+          const picked = pickFunction(abi, fnArg, (args ?? []).length)
+          if ("error" in picked) return { error: picked.error }
+          const fn = picked.fn
+          let callArgs: unknown[]
+          try {
+            callArgs = coerceArgs(fn.inputs, args ?? [])
+          } catch (e: any) {
+            return { error: `${fn.name}: ${String(e?.message || e).slice(0, 200)}` }
+          }
+          const name = stored?.name || `${target.slice(0, 6)}…${target.slice(-4)}`
+
+          if (isReadOnly(fn)) {
+            try {
+              const result = await client.readContract({ address: target, abi: [fn], functionName: fn.name, args: callArgs })
+              const outputs = fn.outputs.length > 1 && Array.isArray(result) ? result : [result]
+              return {
+                kind: "contractRead",
+                network: network.key,
+                contract: name,
+                address: target,
+                function: describeFunction(fn),
+                results: fn.outputs.map((o, i) => ({ name: o.name || (fn.outputs.length > 1 ? `#${i + 1}` : "result"), type: o.type, value: stringifyResult(outputs[i]) })),
+                explorerUrl: explorerAddress(network, target),
+              }
+            } catch (e) {
+              return fail(`${fn.name} reverted`, e)
+            }
+          }
+
+          let valueWei: bigint | undefined
+          if (value && Number(value) > 0) {
+            if (fn.stateMutability !== "payable") return { error: `${fn.name} isn't payable, so it can't receive USDC.` }
+            try {
+              valueWei = toBaseUnits(value, 18)
+            } catch {
+              return { error: `Invalid USDC amount "${value}".` }
+            }
+          }
+          const tx: PreparedTx = {
+            to: target,
+            data: encodeFunctionData({ abi: [fn], functionName: fn.name, args: callArgs }),
+            value: (valueWei ?? 0n).toString(),
+          }
+          const caller = (signingMode === "wallet" ? ownerAddress : wallet?.address) as `0x${string}` | undefined
+          if (!caller || (signingMode === "auto" && !signer)) return noSigner()
+          // Simulate first so a revert is reported before anything is signed.
+          try {
+            await client.call({ account: caller, to: tx.to, data: tx.data, value: valueWei })
+          } catch (e) {
+            return fail(`${fn.name} would revert`, e)
+          }
+          const label = `Call ${fn.name}(${(args ?? []).join(", ")}) on ${name}`
+          if (signingMode === "wallet") return walletAction({ action: "callContract", to: target, tx, label })
+          try {
+            const { hash } = await sendPrepared(signer!, client, tx)
+            return { kind: "transaction", status: "Success", action: "call", hash, from: caller, to: target, value: `${fn.name}(${(args ?? []).join(", ")})`, explorerUrl: explorerTx(network, hash) }
+          } catch (e) {
+            return fail(`${fn.name} failed`, e)
+          }
+        },
+      }),
+
+      listContracts: tool({
+        description: `List the contracts the user deployed through Astrax on ${network.name}, with their functions.`,
+        parameters: z.object({}),
+        execute: async () => {
+          if (!verifiedOwner) return needOwner()
+          const rows = await listContractsByOwner(verifiedOwner, network.key)
+          return {
+            kind: "contractList",
+            network: network.key,
+            contracts: rows.map((r) => ({
+              name: r.name,
+              address: r.address,
+              functions: abiFunctions(JSON.parse(r.abi) as Abi).map((f) => f.name),
+              createdAt: new Date(r.created_at).toLocaleString(),
+              explorerUrl: explorerAddress(network, r.address!),
+            })),
           }
         },
       }),
@@ -885,7 +1132,7 @@ export async function POST(req: Request) {
 
       // ── VISUALS / DATA ──────────────────────────────────────────────────────
       getPriceChart: tool({
-        description: "Get an OHLC candlestick price chart for an asset over a number of days. Defaults to ETH (WETH on Arc; USDC is pegged to $1). Also BTC/cirBTC, EURC, USDC. Prices come from Coinbase.",
+        description: "Get an OHLC candlestick price chart for an asset over a number of days. Defaults to ETH (WETH on Arc). Also USDC, EURC, BTC/cirBTC. Prices come from Coinbase and CoinGecko.",
         parameters: z.object({
           symbol: z.string().optional().describe("Asset symbol, e.g. ETH, BTC, EURC, USDC. Defaults to ETH."),
           days: z.number().int().min(2).max(30).optional(),
@@ -893,14 +1140,9 @@ export async function POST(req: Request) {
         execute: async ({ symbol, days }) => {
           const sym = (symbol || "ETH").toUpperCase()
           const d = days ?? 7
-          let data = await dailyCandles(sym, d)
-          let indicative = false
-          if (!data) {
-            data = await indicativeCandles(sym, d)
-            indicative = true
-          }
-          if (!data || data.length === 0) return { error: `No price data available for ${sym}.` }
-          return { kind: "candlestick", symbol: sym, days: d, data, indicative }
+          const data = await priceCandles(sym, d)
+          if (!data || data.length === 0) return { error: `No price history is available for ${sym}. Supported: USDC, EURC, ETH (WETH) and BTC (cirBTC).` }
+          return { kind: "candlestick", symbol: sym, days: d, data }
         },
       }),
 

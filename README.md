@@ -7,8 +7,8 @@
 ### Talk to Arc in plain English.
 
 An AI agent that turns a chat message into a real on-chain action on **Arc Mainnet**
-and **Arc Testnet**: USDC payments, tokens, NFTs, recurring transfers and self-tracking
-payment links. You stay in control of every signature.
+and **Arc Testnet**: USDC payments, tokens, NFTs, your own smart contracts, recurring
+transfers and self-tracking payment links. You stay in control of every signature.
 
 [Features in depth](FEATURES.md) · [Quick start](#-quick-start) · [Arc docs](https://docs.arc.io)
 
@@ -49,7 +49,10 @@ for you in hands-free autonomous mode.
 "Pay the design team 100 USDC every week, 4 times"
 "Make a payment link for 50 USDC for logo design"
 "Is this token safe? 0x…"
-"Show me the ETH price chart for the last 14 days"
+"Create and deploy a simple counter contract"
+"Increment the counter"
+"What's the count on my counter?"
+"Show me the USDC price chart for the last 14 days"
 ```
 
 ---
@@ -84,10 +87,13 @@ returning users keep their last choice.
 |---|---|---|
 | 💸 | **Chat to transact** | Send USDC, EURC or any ERC-20 to an address or a saved contact name. |
 | 🪙 | **Create tokens and NFTs** | Deploys an Astrax ERC-20 (you own it and can mint more), or a 1-of-1 ERC-721 from an image you upload (PNG, JPG, GIF or WebP), with standard metadata on IPFS. |
+| 🧱 | **Deploy your own smart contracts** | Describe a contract ("a simple counter", "a voting contract", "an escrow") and the agent writes the Solidity, compiles it with `solc` (OpenZeppelin v5 imports work), dry-runs it against the chain and deploys it. Compile errors come back with the failing line so it fixes itself. |
+| 🧭 | **Smart contracts tab** | Everything you deployed through Astrax (custom contracts, tokens and NFTs) on the selected network, with live values such as a counter's `count`. Tap a function to prefill a prompt, or just say "increment the counter". |
+| 🕹️ | **Call any contract from chat** | Reads answer instantly. Writes are simulated first, so a call that would revert is refused before anything is signed. Payable functions can carry USDC. Contracts Astrax didn't deploy work too, with a function signature. |
 | 🗓️ | **Scheduled payments** | One-off or recurring transfers that go out on their own, even after you close the tab. |
 | 🔗 | **Self-tracking payment links** | Share a link or QR code. Astrax finds the USDC payment on-chain and marks it paid. |
 | 🛡️ | **Explain anything** | Paste a transaction, wallet, token or contract and get a plain-English breakdown with risk flags, including look-alike token warnings. |
-| 📈 | **Live market data** | Prices and interactive candlestick charts, rendered right in the chat. |
+| 📈 | **Live market data** | Prices and interactive candlestick charts for USDC, EURC, ETH and BTC, rendered right in the chat. Stablecoins get a tight price scale, so a move from $0.9990 to $1.0020 is actually visible. |
 | 📇 | **Contacts** | A private address book per wallet, so "pay alice" always means *your* alice. |
 | 🔐 | **Two signing modes** | Approve each transaction in MetaMask, Rabby, Coinbase Wallet or any EVM wallet, or go autonomous with a dedicated private key. |
 | 🌐 | **Mainnet + Testnet** | One-click network switcher; every result remembers the network it ran on. |
@@ -152,6 +158,30 @@ flowchart LR
     PAY -- "verify payment" --> RPC
     PAY --> DB
 ```
+
+### From a sentence to a deployed contract
+
+The model writes the Solidity; everything after that is deterministic and checked on the
+server before your wallet is ever asked to sign.
+
+```mermaid
+flowchart LR
+    A["You: 'deploy a simple<br/>counter contract'"] --> B["Agent writes<br/>the Solidity"]
+    B --> C["Server compiles with solc<br/>(import allowlist, size limits)"]
+    C -- "compile error" --> B
+    C --> D["Dry run on Arc:<br/>constructor reverts + gas estimate"]
+    D --> E{"Signing mode"}
+    E -- "Wallet" --> F["Confirm button shows name,<br/>functions and gas"]
+    E -- "Autonomous" --> G["Server signs and sends"]
+    F --> H["Deployed on Arc"]
+    G --> H
+    H --> I["Server re-reads the deploy on-chain,<br/>then stores the address + ABI"]
+    I --> J["Smart contracts tab<br/>+ 'increment the counter'"]
+```
+
+Afterwards the agent knows your contracts and their functions. A call is parsed against
+the stored ABI, simulated, and only then sent, so a write that would revert never costs
+you a fee.
 
 ### How a chat message becomes a transaction
 
@@ -231,7 +261,7 @@ flowchart LR
 | **Framework** | Next.js 15 (App Router), React 19, TypeScript |
 | **AI agent** | Vercel AI SDK 4 (`streamText` with tool calling), Mistral `ministral-8b-latest`, Gemini as fallback |
 | **Blockchain** | `viem` on Arc Mainnet (5042) and Arc Testnet (5042002), with Arc's 20 gwei fee floor applied to every transaction |
-| **Contracts** | `AstraxToken` (ERC-20) and `AstraxNFT` (1-of-1 ERC-721) in `contracts/`, compiled with `solc` into `lib/contracts.ts` |
+| **Contracts** | `AstraxToken` (ERC-20) and `AstraxNFT` (1-of-1 ERC-721) in `contracts/`, precompiled into `lib/contracts.ts`; custom contracts compiled on demand with `solc` (OpenZeppelin v5 imports supported) |
 | **Wallets** | RainbowKit + wagmi (MetaMask, Rabby, Coinbase Wallet, WalletConnect, any injected wallet) |
 | **Database** | libSQL: a local file in development, hosted Turso in production |
 | **Storage** | Pinata IPFS for uploads and NFT metadata |
@@ -257,6 +287,12 @@ flowchart LR
   jobs are claimed atomically, and an interrupted send is never retried.
 - **Payments are verified on-chain.** A payment link is only marked paid after the
   server re-reads the transaction from Arc; the payer's browser is never trusted.
+- **Contract deployments are verified too.** A deployment is only added to your list after
+  the server confirms the transaction deployed exactly the code it compiled, from your
+  wallet. The bytecode stays on the server, so the browser can't swap in something else.
+- **The compiler is boxed in.** Source can only import `@openzeppelin/contracts/...`
+  (never other files on the server), is capped in size, and compiles are rate-limited.
+  Writes to contracts are simulated before they are sent.
 - **Hardened endpoints.** Uploads accept images only (checked by their real bytes) and,
   like payment reports, are rate-limited. The cron endpoint uses a constant-time secret
   check, and model output is rendered without raw HTML.
@@ -274,6 +310,8 @@ app/
     agent/              The AI agent: streaming + all Arc tools
     auth/               Wallet-ownership sign-in (challenge → verify → session)
     contacts/           Owner-only address book
+    contracts/          Owner-only list of deployed contracts (with live values) + remove
+    contracts/[id]/     Wallet-mode contract deploys: fetch calldata, confirm on-chain
     payment-links/      List, check, report and cancel payment links
     schedules/          Owner-only scheduled payments
     scheduler/tick/     Throttled runner triggered by open tabs
@@ -292,6 +330,7 @@ lib/
   payment-links.ts      On-chain payment detection
   db.ts                 libSQL schema and queries
   auth.ts · crypto.ts   Sessions, signatures, key encryption
+  solc.ts · abi-args.ts Solidity compiler for deployContract; ABI argument parsing
   explain.ts            Transaction / address risk analysis
   images.ts · pinata.ts Image checks, IPFS uploads and NFT metadata
 ```
@@ -335,6 +374,8 @@ Locally the database is a file created automatically. Every variable is document
 
 ## 🗺️ Roadmap
 
+- Verified contract source on the explorer for deployed contracts
+- Contract templates (multisig, vesting, crowdfund) and constructor forms in the tab
 - Token swaps through an Arc DEX
 - Cross-chain USDC funding with Circle Gateway / CCTP
 - Transaction memos and batched payouts with Arc's Memo and Multicall3From contracts

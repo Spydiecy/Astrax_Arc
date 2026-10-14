@@ -243,6 +243,18 @@ export async function deployPrepared(
   return { hash, address: receipt.contractAddress }
 }
 
+/** Deploy from encoded creation calldata (bytecode + constructor args). */
+export async function deployData(
+  wallet: WalletClient,
+  client: PublicClient,
+  data: Hex,
+): Promise<{ hash: Hex; address: `0x${string}` }> {
+  const hash = await wallet.sendTransaction({ account: wallet.account!, chain: wallet.chain, data })
+  const receipt = await client.waitForTransactionReceipt({ hash, timeout: 90_000 })
+  if (receipt.status !== "success" || !receipt.contractAddress) throw new TxFailedError(hash, "Deployment reverted.")
+  return { hash, address: receipt.contractAddress }
+}
+
 // ── Errors ────────────────────────────────────────────────────────────────────
 /** Turn raw viem / RPC errors into a short, accurate reason so the model doesn't guess. */
 export function friendlyError(e: unknown, network: ArcNetwork): string {

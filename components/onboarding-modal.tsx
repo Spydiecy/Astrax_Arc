@@ -19,7 +19,7 @@ const CAPABILITIES: { icon: LucideIcon; title: string; body: string }[] = [
   { icon: Globe, title: "Two networks", body: "Arc Mainnet for real USDC, Arc Testnet for free test USDC. Switch in the top bar." },
   { icon: CalendarClock, title: "Schedule", body: "One-off or recurring payments that go out on their own." },
   { icon: Link2, title: "Get paid", body: "Payment links and QR codes that mark themselves paid." },
-  { icon: Rocket, title: "Create", body: "ERC-20 tokens you own, and 1-of-1 NFTs from an image you upload." },
+  { icon: Rocket, title: "Create", body: "ERC-20 tokens, 1-of-1 NFTs from an image, and your own smart contracts you can then call from chat." },
   { icon: ShieldCheck, title: "Explain", body: "Plain-English breakdowns of any transaction, wallet, token or contract, with risk flags." },
 ]
 
@@ -28,6 +28,7 @@ const TRY_PROMPTS = [
   "Create a payment link for 5 USDC",
   "Pay alice 1 USDC every week, 4 times",
   "Create a token called MoonCoin with symbol MOON and supply 1000000",
+  "Create and deploy a simple counter contract",
 ]
 
 function ModeCard({

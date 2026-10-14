@@ -4,7 +4,7 @@ import React from 'react'
 import Link from 'next/link'
 import {
     ArrowRight, Menu, X, CheckCircle2, Send, CalendarClock, Link2, ShieldCheck, Wallet, LineChart,
-    Coins, Rocket, BookUser, Boxes, type LucideIcon,
+    Coins, Rocket, BookUser, Boxes, Code2, Globe, type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { AnimatedGroup } from '@/components/ui/animated-group'
@@ -14,18 +14,20 @@ import { PromptMarquee } from '@/components/blocks/prompt-marquee'
 
 const FEATURES: { icon: LucideIcon; title: string; body: string }[] = [
     { icon: Send, title: 'Chat to act on-chain', body: 'Send USDC, EURC or any ERC-20, deploy your own ERC-20 tokens, or attach an image and mint it as a 1-of-1 NFT with its metadata on IPFS. Pay saved contacts by name.' },
+    { icon: Code2, title: 'Deploy your own smart contracts', body: 'Describe a contract in plain English, like a counter, a vote or an escrow. Astrax writes the Solidity, compiles it, dry-runs it and deploys it in one message.' },
+    { icon: Boxes, title: 'Talk to your contracts', body: 'A Smart contracts tab lists everything you deployed, with live values. Say "increment the counter" or tap a function and Astrax calls it, checking every write first.' },
     { icon: CalendarClock, title: 'Scheduled payments', body: 'One-off or recurring transfers, like a weekly allowance or a monthly salary, sent automatically, even after you close the app.' },
     { icon: Link2, title: 'Payment links that track themselves', body: 'Share a link or QR code. Astrax spots the USDC payment on-chain and marks the link paid, with the transaction.' },
     { icon: ShieldCheck, title: 'Explain anything', body: 'Paste a transaction, wallet, token or contract and get a plain-English breakdown with risk flags before you trust it.' },
-    { icon: Wallet, title: 'Your keys, your choice', body: 'Approve every transaction in your own EVM wallet, or go hands-free with a dedicated key. Your contacts, links and schedules are only visible to your wallet.' },
+    { icon: Globe, title: 'Arc Mainnet and Testnet', body: 'Switch networks in one click. Try everything with free test USDC on Testnet, then move to Mainnet. Fees are paid in USDC and cost a fraction of a cent.' },
+    { icon: Wallet, title: 'Your keys, your choice', body: 'Approve every transaction in your own EVM wallet, or go hands-free with a dedicated key. Your contacts, links, schedules and contracts are only visible to your wallet.' },
     { icon: LineChart, title: 'Prices, charts and diagrams', body: 'Live USDC, EURC, ETH and BTC market data, candlestick charts, and Mermaid diagrams of any flow. Chats stay private in your browser.' },
 ]
-
 const STACK_NOTES: { title: string; body: string }[] = [
     { title: 'Interface', body: 'Next.js 15 and React 19, with chat history kept only in your browser.' },
     { title: 'AI agent', body: 'Vercel AI SDK streaming Mistral ministral-8b, calling typed tools for every action.' },
     { title: 'Wallets', body: 'RainbowKit and wagmi for MetaMask, Rabby, Coinbase Wallet, WalletConnect and any injected EVM wallet. Ownership is proven with a free EIP-191 signed message.' },
-    { title: 'Chain', body: 'viem on Arc Mainnet and Arc Testnet, with USDC as gas. Astrax ERC-20 and ERC-721 contracts are compiled with solc and deployed from chat.' },
+    { title: 'Chain', body: 'viem on Arc Mainnet and Arc Testnet, with USDC as gas. Contracts you ask for are compiled on the server with solc (OpenZeppelin v5 supported) and deployed from chat.' },
     { title: 'Storage', body: 'libSQL locally or Turso when hosted, one row per wallet. Files and NFT metadata on IPFS via Pinata.' },
 ]
 
@@ -33,6 +35,9 @@ const PLAN_ITEMS = [
     'AI chat with copy, edit and regenerate',
     'USDC, EURC & ERC-20 transfers',
     'ERC-20 token & NFT creation with image upload',
+    'Write, compile & deploy custom smart contracts',
+    'Smart contracts tab, with live values',
+    'Call your contracts from chat, writes checked first',
     'Scheduled & recurring payments',
     'Tracked payment links with QR codes',
     'Per-wallet contacts',
@@ -51,6 +56,9 @@ const EXAMPLES: { icon: LucideIcon; text: string }[] = [
     { icon: BookUser, text: 'Save alice as <address>' },
     { icon: LineChart, text: 'Show the ETH price chart for 30 days' },
     { icon: Coins, text: 'Create an NFT called Genesis with this image' },
+    { icon: Code2, text: 'Create and deploy a simple counter contract' },
+    { icon: Code2, text: 'Increment the counter' },
+    { icon: Boxes, text: "What's the count on my counter?" },
     { icon: Boxes, text: 'Show the latest blocks' },
 ]
 
@@ -132,7 +140,7 @@ export function HeroSection() {
                                         <span className="text-foreground text-sm inline-flex items-center gap-1.5">
                                             {/* eslint-disable-next-line @next/next/no-img-element */}
                                             <img src="/chain/arc.png" alt="" className="h-4 w-4 rounded-full" />
-                                            Now live on Arc Mainnet and Testnet
+                                            Deploy smart contracts from chat · live on Arc
                                         </span>
                                         <span className="dark:border-background block h-4 w-0.5 border-l bg-white dark:bg-zinc-700"></span>
 
@@ -154,7 +162,7 @@ export function HeroSection() {
                                     </h1>
                                     <p
                                         className="mx-auto mt-8 max-w-2xl text-balance text-lg">
-                                        Send USDC, create tokens and NFTs, schedule payments and share payment links that track themselves on Arc Mainnet and Testnet, all by chatting. Approve every step in your own wallet.
+                                        Send USDC, create tokens and NFTs, deploy your own smart contracts, schedule payments and share payment links that track themselves on Arc Mainnet and Testnet, all by chatting. Approve every step in your own wallet.
                                     </p>
                                 </AnimatedGroup>
 

@@ -17,3 +17,6 @@ declare module "node:sqlite" {
     close(): void
   }
 }
+
+// solc-js ships without type definitions (used server-side in lib/solc.ts).
+declare module "solc"

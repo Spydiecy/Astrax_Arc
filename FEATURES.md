@@ -63,17 +63,58 @@ token**, that turns chat into on-chain actions on **Arc Mainnet** and **Arc Test
     JSON (`name`, `symbol`, `description`, `image`, `properties.files`) to IPFS, which
     becomes the token's `tokenURI`.
   - `mintTokens`: mint more of an Astrax token you own.
+  - `deployContract`: write, compile and deploy a custom Solidity contract (see below).
+  - `callContract`: call any function on a deployed contract.
   - `scheduleTransfer` / `listSchedules` / `cancelSchedule`.
   - `createPaymentLink` / `listPaymentLinks`.
+- **Contracts:** `listContracts` shows what you've deployed.
 - **Utility:** contacts (`saveContact`, `resolveContact`, `listContacts`,
   `deleteContact`), assets (`storeAsset`, `listAssets`), `generateDiagram` (Mermaid),
   `generateImage` (Gemini, optional), and `swap` (a stub until a DEX is configured via
   `ARC_DEX`).
-- Not supported: deploying arbitrary contracts from chat.
+- `getPriceChart` uses Coinbase candles when a market exists and CoinGecko OHLC otherwise
+  (this covers USDC and EURC). If neither has data it says so rather than inventing a
+  series. The chart scales its axis to the real range, so a stablecoin around $1 shows
+  readable prices like $0.9998 instead of a flat line.
 - `getAddressActivity` uses the network's Blockscout API when reachable and otherwise
   scans recent USDC Transfer logs (the last few hours).
 
-## Contracts
+## Custom contracts
+- Ask for a contract in plain English ("create and deploy a simple counter"). The agent
+  writes the Solidity, and `deployContract` compiles it on the server with `solc` 0.8.28
+  (optimizer on, `cancun` EVM target). Self-contained sources work, as do OpenZeppelin v5
+  imports (`@openzeppelin/contracts/...`); no other imports are available.
+- Compile errors come back with the failing line and a hint for common OpenZeppelin v5
+  mistakes (no `Counters.sol`, `Ownable(msg.sender)`), so the agent can fix and retry.
+- Before anything is signed, the deployment is dry-run against the chain (constructor
+  reverts show up as an error, and the gas estimate is shown). Sources are capped at
+  40,000 characters, contracts at the 24,576-byte limit, and compiles are rate-limited.
+- **Wallet mode:** the confirm button shows the contract name, its functions and the gas
+  estimate, switches the wallet to the right network and deploys. The bytecode stays on the
+  server (fetched by id), and the address is stored only after the server re-reads the
+  deployment from the chain and checks it matches what was compiled, from your wallet.
+- **Autonomous mode:** compiled and deployed straight away.
+- The ABI is saved per network, so afterwards `callContract` works by function name
+  ("increment the counter", "what's the count?"): view/pure functions return their value
+  immediately, others are simulated first and then sent (payable ones can carry USDC).
+  For a contract Astrax didn't deploy, give a full signature such as
+  `balanceOf(address) view returns (uint256)`.
+- **Smart contracts tab** (sidebar): every contract you deployed through Astrax (custom
+  contracts, plus tokens and NFTs created from chat) on the selected network, with its address (copy, explorer link), deploy date and the live value
+  of its no-argument read functions (a counter's `count`, for example). Tap a function chip
+  and Astrax fills the chat box with a ready prompt ("Call increment on Counter (0x…)"),
+  so you review it and press Enter; a write never fires from a tap alone. "Remove" only
+  hides a contract from the list (it stays on-chain and Astrax keeps its ABI). Needs a
+  verified wallet, like the other tabs.
+- **The agent works with your contracts by name.** Your deployed contracts and their
+  functions are given to it on every request, so "increment the counter", "what's the
+  count?" or "call setNote on Vault" go straight to `callContract`, which accepts a
+  contract name or an address. Reads answer immediately; writes are simulated first and then
+  sent (wallet mode shows a confirm button, autonomous mode signs).
+- Constructor and call arguments are parsed into typed values: integers, addresses, bools,
+  bytes, arrays and tuples (as JSON).
+
+## Built-in contracts
 - Sources in `contracts/`: `AstraxToken.sol` (ERC-20 with owner-only `mint`) and
   `AstraxNFT.sol` (1-of-1 ERC-721, token #1 minted to the deployer, no further minting).
 - `npm run compile:contracts` compiles them with `solc` into `lib/contracts.ts` (ABI +
@@ -132,8 +173,8 @@ token**, that turns chat into on-chain actions on **Arc Mainnet** and **Arc Test
 
 ## Storage and deployment
 - **Browser:** chats, selected network and signing mode.
-- **Database (libSQL):** contacts, schedules and payment links (each tagged with its
-  network) and assets, each row tied to its wallet. It also holds used sign-in nonces and
+- **Database (libSQL):** contacts, schedules, payment links and deployed contracts (each
+  tagged with its network) and assets, each row tied to its wallet. It also holds used sign-in nonces and
   rate limits, so those hold across servers.
 - **Where:** locally a file at `.data/astrax.db`; on Vercel a hosted Turso database via
   `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` (free tier is enough). See the README.

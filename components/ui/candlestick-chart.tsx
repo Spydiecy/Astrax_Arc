@@ -34,11 +34,16 @@ const PLOT_H = H - PAD_TOP - AXIS_BOTTOM
 const UP = "#10b981"
 const DOWN = "#ef4444"
 
-/** Price with precision that fits its magnitude ($121.57, $0.4213, $0.00001234). */
-function formatPrice(p: number): string {
+/**
+ * Price with precision that fits its magnitude ($2,727, $121.57, $0.4213, $0.00001234).
+ * `minDigits` raises it when the whole chart spans a tiny range (a stablecoin moving
+ * between $0.9996 and $1.0000), so neighbouring labels never round to the same value.
+ */
+function formatPrice(p: number, minDigits = 0): string {
   if (!Number.isFinite(p)) return "—"
   const abs = Math.abs(p)
-  const digits = abs >= 1000 ? 0 : abs >= 1 ? 2 : abs >= 0.01 ? 4 : 8
+  const base = abs >= 1000 ? 0 : abs >= 1 ? 2 : abs >= 0.01 ? 4 : 8
+  const digits = Math.min(8, Math.max(base, minDigits))
   return `$${p.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`
 }
 
@@ -75,14 +80,22 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({ data, symbol, days,
     const candles = [...data].sort((a, b) => a.timestamp - b.timestamp)
     const high = Math.max(...candles.map((d) => d.high))
     const low = Math.min(...candles.map((d) => d.low))
-    const { ticks, lo, hi } = niceTicks(low, high)
+    // Pad the price range a little so wicks don't touch the edges, and never let
+    // it collapse to a point: a perfectly flat series still gets a visible scale.
+    const mid = (high + low) / 2
+    const span = Math.max(high - low, Math.abs(mid) * 0.0005, 1e-8)
+    const pad = span * 0.12
+    const { ticks, lo, hi } = niceTicks(low - pad, high + pad)
+    // Decimals needed to tell the tick labels apart.
+    const step = ticks.length > 1 ? ticks[1] - ticks[0] : span
+    const tickDigits = Math.min(8, Math.max(0, Math.ceil(-Math.log10(step) - 1e-9)))
     const y = (p: number) => PAD_TOP + ((hi - p) / (hi - lo)) * PLOT_H
     const slot = PLOT_W / candles.length
     const bodyW = Math.max(3, Math.min(28, slot * 0.6))
     const x = (i: number) => PAD_LEFT + slot * i + slot / 2
     // At most ~6 date labels so they never overlap.
     const labelEvery = Math.max(1, Math.ceil(candles.length / 6))
-    return { candles, high, low, ticks, y, x, slot, bodyW, labelEvery }
+    return { candles, high, low, ticks, y, x, slot, bodyW, labelEvery, tickDigits }
   }, [data])
 
   if (!chart) {
@@ -95,7 +108,8 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({ data, symbol, days,
     )
   }
 
-  const { candles, high, low, ticks, y, x, slot, bodyW, labelEvery } = chart
+  const { candles, high, low, ticks, y, x, slot, bodyW, labelEvery, tickDigits } = chart
+  const fmt = (p: number) => formatPrice(p, tickDigits)
   const first = candles[0]
   const last = candles[candles.length - 1]
   const change = last.close - first.open
@@ -124,9 +138,9 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({ data, symbol, days,
       <CardContent>
         {/* Period stats */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-          <Stat label="Last price" value={formatPrice(last.close)} strong />
-          <Stat label={`${period} high`} value={formatPrice(high)} className="text-green-500" />
-          <Stat label={`${period} low`} value={formatPrice(low)} className="text-red-500" />
+          <Stat label="Last price" value={fmt(last.close)} strong />
+          <Stat label={`${period} high`} value={fmt(high)} className="text-green-500" />
+          <Stat label={`${period} low`} value={fmt(low)} className="text-red-500" />
           <Stat label={`${period} volume`} value={totalVolume > 0 ? `${formatVolume(totalVolume)} ${symbol.toUpperCase()}` : "—"} />
         </div>
 
@@ -135,10 +149,10 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({ data, symbol, days,
           {active ? (
             <>
               <span className="text-foreground">{formatDay(active.timestamp)}</span>
-              <span>O {formatPrice(active.open)}</span>
-              <span>H {formatPrice(active.high)}</span>
-              <span>L {formatPrice(active.low)}</span>
-              <span className={active.close >= active.open ? "text-green-500" : "text-red-500"}>C {formatPrice(active.close)}</span>
+              <span>O {fmt(active.open)}</span>
+              <span>H {fmt(active.high)}</span>
+              <span>L {fmt(active.low)}</span>
+              <span className={active.close >= active.open ? "text-green-500" : "text-red-500"}>C {fmt(active.close)}</span>
             </>
           ) : (
             <span>Hover a candle for details</span>
@@ -156,9 +170,12 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({ data, symbol, days,
           {ticks.map((t) => (
             <g key={t}>
               <line x1={PAD_LEFT} x2={PAD_LEFT + PLOT_W} y1={y(t)} y2={y(t)} stroke="currentColor" strokeOpacity={0.15} strokeDasharray="3 3" />
-              <text x={PAD_LEFT + PLOT_W + 8} y={y(t)} dominantBaseline="middle" fontSize={11} fill="currentColor">
-                {formatPrice(t)}
-              </text>
+              {/* Skip a label the last-price tag would cover */}
+              {Math.abs(y(t) - y(last.close)) >= 12 && (
+                <text x={PAD_LEFT + PLOT_W + 8} y={y(t)} dominantBaseline="middle" fontSize={11} fill="currentColor">
+                  {fmt(t)}
+                </text>
+              )}
             </g>
           ))}
 
@@ -202,7 +219,7 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({ data, symbol, days,
           <line x1={PAD_LEFT} x2={PAD_LEFT + PLOT_W} y1={y(last.close)} y2={y(last.close)} stroke={up ? UP : DOWN} strokeOpacity={0.5} strokeWidth={1} />
           <rect x={PAD_LEFT + PLOT_W + 2} y={y(last.close) - 9} width={AXIS_RIGHT - 4} height={18} rx={3} fill={up ? UP : DOWN} />
           <text x={PAD_LEFT + PLOT_W + 8} y={y(last.close)} dominantBaseline="middle" fontSize={11} fontWeight={600} fill="#fff">
-            {formatPrice(last.close)}
+            {fmt(last.close)}
           </text>
         </svg>
       </CardContent>

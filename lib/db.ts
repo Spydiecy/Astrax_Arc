@@ -66,6 +66,23 @@ const SCHEMA = [
     created_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS assets_owner ON assets(owner, created_at)`,
+  // Contracts deployed from chat, with their ABI so the agent can call them later.
+  // `address` stays NULL until a wallet-mode deployment is confirmed on-chain.
+  `CREATE TABLE IF NOT EXISTS contracts (
+    id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    network TEXT NOT NULL,
+    address TEXT,
+    name TEXT NOT NULL,
+    abi TEXT NOT NULL,
+    deploy_hash TEXT NOT NULL,
+    deploy_data TEXT,
+    tx_hash TEXT,
+    hidden INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS contracts_address ON contracts(network, address)`,
+  `CREATE INDEX IF NOT EXISTS contracts_owner ON contracts(owner, network, created_at)`,
   // Single-use sign-in challenges (shared across server instances).
   `CREATE TABLE IF NOT EXISTS auth_nonces (nonce TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)`,
   // Fixed-window rate limits (shared across server instances).
@@ -74,7 +91,12 @@ const SCHEMA = [
 
 // Columns added after a table first shipped go here as `ALTER TABLE … ADD COLUMN …`.
 // They are re-run on every start and a "duplicate column" error is ignored.
-const MIGRATIONS: string[] = []
+const MIGRATIONS: string[] = [
+  // contracts.deploy_data was added after the table first shipped.
+  `ALTER TABLE contracts ADD COLUMN deploy_data TEXT`,
+  // "Remove" in the Smart contracts tab hides a contract from the list (its ABI is kept).
+  `ALTER TABLE contracts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0`,
+]
 
 function makeClient(): Client {
   const url = process.env.TURSO_DATABASE_URL?.trim()
@@ -326,6 +348,73 @@ export async function listAssets(owner: string): Promise<StoredAsset[]> {
     [owner],
   )
   return rows.map((r) => ({ link: r.link, description: r.description, owner, createdAt: new Date(r.created_at).toISOString() }))
+}
+
+// ── Deployed contracts ───────────────────────────────────────────────────────
+export interface ContractRow {
+  id: string
+  owner: string
+  network: string
+  address: string | null
+  name: string
+  /** JSON-encoded ABI. */
+  abi: string
+  /** keccak256 of the deployment calldata, used to confirm wallet-mode deploys. */
+  deploy_hash: string
+  /** Deployment calldata, kept only until a wallet-mode deploy is confirmed. */
+  deploy_data: string | null
+  tx_hash: string | null
+  hidden: number
+  created_at: number
+}
+
+export async function insertContract(c: Omit<ContractRow, "created_at" | "hidden">): Promise<void> {
+  // Drop wallet-mode deployments that were never confirmed (occasional cleanup).
+  if (Math.random() < 0.05) await run(`DELETE FROM contracts WHERE address IS NULL AND created_at < ?`, [Date.now() - 7 * 86_400_000])
+  await run(
+    `INSERT INTO contracts (id, owner, network, address, name, abi, deploy_hash, deploy_data, tx_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [c.id, c.owner, c.network, c.address?.toLowerCase() ?? null, c.name, c.abi, c.deploy_hash, c.deploy_data, c.tx_hash, Date.now()],
+  )
+}
+
+export function getContractById(id: string): Promise<ContractRow | null> {
+  return first<ContractRow>(`SELECT * FROM contracts WHERE id = ?`, [id])
+}
+
+/** Latest stored ABI for a deployed address on a network (ABIs are public, so no owner check). */
+export function getContractByAddress(network: string, address: string): Promise<ContractRow | null> {
+  return first<ContractRow>(
+    `SELECT * FROM contracts WHERE network = ? AND address = ? ORDER BY created_at DESC LIMIT 1`,
+    [network, address.toLowerCase()],
+  )
+}
+
+/** Record the on-chain address of a pending (wallet-mode) deployment. */
+export async function confirmContract(id: string, address: string, txHash: string): Promise<boolean> {
+  return (await run(`UPDATE contracts SET address = ?, tx_hash = ?, deploy_data = NULL WHERE id = ? AND address IS NULL`, [address.toLowerCase(), txHash, id])) > 0
+}
+
+export function listContractsByOwner(owner: string, network: string, limit = 50): Promise<ContractRow[]> {
+  return all<ContractRow>(
+    `SELECT * FROM contracts WHERE owner = ? AND network = ? AND address IS NOT NULL AND hidden = 0 ORDER BY created_at DESC LIMIT ?`,
+    [owner, network, limit],
+  )
+}
+
+/**
+ * Find one of the owner's contracts by name, for "increment the counter". Exact
+ * (case-insensitive) match first, then a name that contains the words; newest wins.
+ */
+export async function findContractByName(owner: string, network: string, name: string): Promise<ContractRow | null> {
+  const q = name.trim().toLowerCase().replace(/\s+contract$/, "")
+  if (!q) return null
+  const rows = await listContractsByOwner(owner, network, 100)
+  return rows.find((r) => r.name.toLowerCase() === q) ?? rows.find((r) => r.name.toLowerCase().includes(q) || q.includes(r.name.toLowerCase())) ?? null
+}
+
+/** Hide a contract from the owner's list (it stays on-chain and its ABI stays stored). */
+export async function hideContract(id: string, owner: string): Promise<boolean> {
+  return (await run(`UPDATE contracts SET hidden = 1 WHERE id = ? AND owner = ?`, [id, owner])) > 0
 }
 
 // ── Shared security state ────────────────────────────────────────────────────

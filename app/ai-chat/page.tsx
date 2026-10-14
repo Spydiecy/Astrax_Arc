@@ -127,7 +127,7 @@ function ranOnChain(msgs: any[]): boolean {
     (m.toolInvocations ?? []).some((inv: any) => {
       const r = inv.state === "result" ? inv.result : null
       if (!r || r.error) return false
-      return r.kind === "deploy" || r.kind === "schedule" || (r.kind === "transaction" && (r.action === "send" || r.action === "mint"))
+      return r.kind === "deploy" || r.kind === "schedule" || (r.kind === "transaction" && (r.action === "send" || r.action === "mint" || r.action === "call"))
     }),
   )
 }
@@ -287,7 +287,7 @@ function ToolCard({ result, callId, fallbackNetwork }: { result: any; callId?: s
       )
     case "transaction":
       return (
-        <CardShell icon={<ArrowUpRight className="w-4 h-4" />} title={result.action === "send" ? "Payment Sent" : result.action === "mint" ? "Tokens Minted" : "Transaction"}>
+        <CardShell icon={<ArrowUpRight className="w-4 h-4" />} title={result.action === "send" ? "Payment Sent" : result.action === "mint" ? "Tokens Minted" : result.action === "call" ? "Contract Called" : "Transaction"}>
           <div className="flex items-center justify-between gap-3 text-sm py-1">
             <span className="text-gray-500 dark:text-gray-400">Tx hash</span>
             <span className="font-mono text-xs flex items-center gap-1">{short(result.hash)} <CopyBtn value={result.hash} /></span>
@@ -336,9 +336,6 @@ function ToolCard({ result, callId, fallbackNetwork }: { result: any; callId?: s
       return (
         <div className="mt-3 w-full max-w-2xl">
           <CandlestickChart data={result.data} symbol={result.symbol} days={result.days} />
-          {result.indicative && (
-            <p className="mt-1 text-xs text-gray-500">Indicative series — {result.symbol} has no live Coinbase market, derived from spot price.</p>
-          )}
         </div>
       )
     case "image":
@@ -379,9 +376,20 @@ function ToolCard({ result, callId, fallbackNetwork }: { result: any; callId?: s
       )
     case "deploy":
       return (
-        <CardShell icon={<Rocket className="w-4 h-4" />} title={result.what === "nft" ? "NFT Created" : "Token Created"}>
+        <CardShell icon={<Rocket className="w-4 h-4" />} title={result.what === "nft" ? "NFT Created" : result.what === "contract" ? "Contract Deployed" : "Token Created"}>
           {result.name && <Field label="Name">{result.name}{result.symbol ? ` (${result.symbol})` : ""}</Field>}
           {result.supply && <Field label="Supply">{result.supply}</Field>}
+          {result.what === "contract" && result.compiler && <Field label="Compiler">{result.compiler} · {Number(result.sizeBytes).toLocaleString()} bytes</Field>}
+          {result.what === "contract" && result.functions?.length > 0 && (
+            <div className="py-1">
+              <div className="text-sm text-gray-500 dark:text-gray-400 mb-1">Functions</div>
+              <div className="flex flex-wrap gap-1">
+                {result.functions.map((f: string) => (
+                  <span key={f} className="text-xs font-mono px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800">{f}</span>
+                ))}
+              </div>
+            </div>
+          )}
           {result.image && (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={result.image} alt={`${result.name || "NFT"} artwork`} className="my-2 max-h-56 rounded-md border border-gray-200 dark:border-gray-800" />
@@ -410,6 +418,36 @@ function ToolCard({ result, callId, fallbackNetwork }: { result: any; callId?: s
           <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
             View on Arc Explorer <ArrowUpRight className="w-3.5 h-3.5" />
           </a>
+        </CardShell>
+      )
+    case "contractRead":
+      return (
+        <CardShell icon={<Code className="w-4 h-4" />} title={`Read ${result.contract}`}>
+          <Field label="Function"><span className="font-mono text-xs">{result.function}</span></Field>
+          {result.results?.map((r: any, i: number) => (
+            <Field key={i} label={r.name}>
+              <span className="font-mono text-xs">{typeof r.value === "object" ? JSON.stringify(r.value) : String(r.value)}</span>
+            </Field>
+          ))}
+          {result.explorerUrl && (
+            <a href={result.explorerUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline">
+              View contract on Arc Explorer <ArrowUpRight className="w-3.5 h-3.5" />
+            </a>
+          )}
+        </CardShell>
+      )
+    case "contractList":
+      return (
+        <CardShell icon={<Code className="w-4 h-4" />} title="Your Contracts">
+          {result.contracts.length === 0 ? <p className="text-sm text-gray-500">No contracts deployed yet. Try: “deploy a simple counter contract”.</p> : result.contracts.map((c: any) => (
+            <div key={c.address} className="rounded border border-gray-200 dark:border-gray-800 p-2 text-sm mb-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium">{c.name}</span>
+                <a href={c.explorerUrl} target="_blank" rel="noreferrer" className="font-mono text-xs text-blue-600 dark:text-blue-400 hover:underline">{short(c.address)}</a>
+              </div>
+              <div className="text-xs text-gray-500 truncate">{c.functions.join(", ")}</div>
+            </div>
+          ))}
         </CardShell>
       )
     case "schedule":
@@ -601,6 +639,7 @@ const SUGGESTIONS = [
   { icon: <Wallet className="w-3.5 h-3.5" />, label: "Check my USDC balance", prompt: "What's my USDC balance?" },
   { icon: <LineChart className="w-3.5 h-3.5" />, label: "ETH price chart", prompt: "Show me the ETH price chart for the last 7 days" },
   { icon: <Rocket className="w-3.5 h-3.5" />, label: "Create a token", prompt: "Create a token called MoonCoin with symbol MOON and supply 1000000" },
+  { icon: <Code className="w-3.5 h-3.5" />, label: "Deploy a contract", prompt: "Create and deploy a simple counter contract" },
   { icon: <Code className="w-3.5 h-3.5" />, label: "Workflow diagram", prompt: "Draw a workflow diagram for creating and sending an ERC-20 token on Arc" },
   { icon: <Link2 className="w-3.5 h-3.5" />, label: "Payment link", prompt: "Create a payment link for 5 USDC" },
   { icon: <Boxes className="w-3.5 h-3.5" />, label: "Latest blocks", prompt: "Show me the latest blocks on Arc" },
@@ -642,6 +681,7 @@ function ChatSession({ chatId }: { chatId: string }) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const recognitionRef = useRef<any>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   // Keep the latest signing context in a ref so each request sends fresh values.
   const ctxRef = useRef({ privateKey, signingMode, address, network: network.key })
@@ -733,6 +773,23 @@ function ChatSession({ chatId }: { chatId: string }) {
     window.addEventListener("openOnboarding", open)
     return () => window.removeEventListener("openOnboarding", open)
   }, [])
+
+  // Other parts of the app (the Smart contracts tab) can drop a prompt into the box.
+  useEffect(() => {
+    const onPrompt = (e: Event) => {
+      const prompt = (e as CustomEvent).detail?.prompt
+      if (typeof prompt !== "string") return
+      setInput(prompt)
+      setTimeout(() => {
+        const el = inputRef.current
+        if (!el) return
+        el.focus()
+        el.setSelectionRange(prompt.length, prompt.length)
+      }, 50)
+    }
+    window.addEventListener("astrax:prompt", onPrompt)
+    return () => window.removeEventListener("astrax:prompt", onPrompt)
+  }, [setInput])
 
   const closeOnboarding = () => {
     localStorage.setItem("astrax_onboarded", "1")
@@ -1067,6 +1124,7 @@ function ChatSession({ chatId }: { chatId: string }) {
         )}
         <form onSubmit={onSubmit} className="w-full relative">
           <Input
+            ref={inputRef}
             value={input}
             onChange={handleInputChange}
             placeholder={readyImages.length > 0 || uploading ? "Add a message, e.g. “mint this as an NFT called Sunset”" : "Message Astrax…"}

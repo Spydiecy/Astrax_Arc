@@ -25,8 +25,8 @@ const LAYERS: { icon: LucideIcon; label: string; detail: string; items: string[]
   {
     icon: Blocks,
     label: "Chain",
-    detail: "Transfers, tokens, NFTs and payment tracking",
-    items: ["viem", "Arc Mainnet & Testnet", "ERC-20 / ERC-721 (solc)"],
+    detail: "Transfers, tokens, NFTs, custom contracts and payment tracking",
+    items: ["viem", "Arc Mainnet & Testnet", "solc + OpenZeppelin v5", "ERC-20 / ERC-721"],
   },
   {
     icon: Database,

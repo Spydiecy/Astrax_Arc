@@ -88,6 +88,7 @@ export default function PayPage() {
     if (!link || !address || addrKey(address) === addrKey(link.recipient)) return
     setPhase("wallet")
     setTxError("")
+    let sent = ""
     try {
       const chainId = network.id
       if (walletChainId !== chainId) await switchChain(wagmiConfig, { chainId })
@@ -104,6 +105,7 @@ export default function PayPage() {
         data: tx.data,
         ...(await estimateArcFees(client)),
       })
+      sent = hash
       setSentHash(hash)
       setPhase("confirming")
       const receipt = await client.waitForTransactionReceipt({ hash, timeout: 90_000 })
@@ -122,7 +124,13 @@ export default function PayPage() {
       }
       setPhase("idle")
     } catch (e) {
-      setTxError(friendlyError(e, network))
+      // After the wallet has sent it, don't invite a second payment: the server keeps
+      // checking the chain, and this page updates once it sees the payment.
+      setTxError(
+        sent && !/failed on-chain/.test(String((e as Error)?.message))
+          ? "Your payment was sent, but this page couldn't confirm it. It will update by itself once the payment is seen on-chain."
+          : friendlyError(e, network),
+      )
       setPhase("error")
     }
   }
@@ -215,7 +223,7 @@ export default function PayPage() {
             <button
               type="button"
               onClick={pay}
-              disabled={busy}
+              disabled={busy || Boolean(sentHash)}
               className="w-full flex items-center justify-center gap-2 rounded-lg bg-gray-900 dark:bg-white text-white dark:text-black py-4 text-lg font-semibold hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-70"
             >
               {busy && <Loader2 className="h-5 w-5 animate-spin" />}

@@ -74,6 +74,7 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
     }
     setPhase("wallet")
     setErrMsg("")
+    let sentHash: `0x${string}` | undefined
     try {
       if (walletChainId !== network.id) await switchChain(wagmiConfig, { chainId: network.id })
       const wallet = await getWalletClient(wagmiConfig, { chainId: network.id, account: address })
@@ -104,6 +105,7 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
           ...fees,
         })
       }
+      sentHash = txHash
       setHash(txHash)
       setPhase("mining")
       const receipt = await client.waitForTransactionReceipt({ hash: txHash, timeout: 90_000 })
@@ -123,7 +125,13 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
       setPhase("done")
       onDone?.(txHash)
     } catch (e) {
-      setErrMsg(friendlyError(e, network))
+      // Once the wallet has sent it, a failure here is about confirming, not sending.
+      const reverted = /reverted on-chain/.test(String((e as Error)?.message))
+      setErrMsg(
+        sentHash && !reverted
+          ? "Your transaction was sent, but this page couldn't confirm it. Check it on the explorer; it may already be done."
+          : friendlyError(e, network),
+      )
       setPhase("error")
     }
   }, [id, action, address, isConnected, walletChainId, network, onDone])
@@ -175,8 +183,13 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
   if (phase === "error") {
     return (
       <div className="mt-3 w-full max-w-xl rounded-lg border border-red-300 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 p-3 text-sm text-red-700 dark:text-red-300 flex items-center justify-between gap-3">
-        <span className="break-words">{errMsg}</span>
-        <button onClick={() => setPhase("idle")} className="underline flex-shrink-0 text-xs">retry</button>
+        <span className="break-words">
+          {errMsg}
+          {hash && (
+            <a href={explorerTx(network, hash)} target="_blank" rel="noreferrer" className="ml-1 underline whitespace-nowrap">View transaction</a>
+          )}
+        </span>
+        {!hash && <button onClick={() => setPhase("idle")} className="underline flex-shrink-0 text-xs">retry</button>}
       </div>
     )
   }

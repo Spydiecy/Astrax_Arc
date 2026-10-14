@@ -86,9 +86,21 @@ function rpcList(override: string | undefined, defaults: string[]): string[] {
   return [...new Set([...parseRpcUrls(override), ...defaults])]
 }
 
-const MAINNET_RPCS = rpcList(process.env.NEXT_PUBLIC_ARC_MAINNET_RPC_URL, ["https://rpc.mainnet.arc.io"])
+// Your own endpoints (NEXT_PUBLIC_ARC_*_RPC_URL, e.g. Infura or QuickNode URLs with your
+// key) are tried first. After them come Circle's primary endpoint and the keyless public
+// endpoints of its node partners (Blockdaemon, dRPC, QuickNode), so one blocked or
+// rate-limited RPC never takes the app down.
+const MAINNET_RPCS = rpcList(process.env.NEXT_PUBLIC_ARC_MAINNET_RPC_URL, [
+  "https://rpc.mainnet.arc.io",
+  "https://rpc.blockdaemon.mainnet.arc.io",
+  "https://rpc.drpc.mainnet.arc.io",
+  "https://rpc.quicknode.mainnet.arc.io",
+])
 const TESTNET_RPCS = rpcList(process.env.NEXT_PUBLIC_ARC_TESTNET_RPC_URL, [
   "https://rpc.testnet.arc.io",
+  "https://rpc.blockdaemon.testnet.arc.io",
+  "https://rpc.drpc.testnet.arc.io",
+  "https://rpc.quicknode.testnet.arc.io",
   "https://rpc.testnet.arc.network",
 ])
 
@@ -100,7 +112,14 @@ const TESTNET_RPCS = rpcList(process.env.NEXT_PUBLIC_ARC_TESTNET_RPC_URL, [
  * fee + tip is charged; the 2x headroom just survives fee changes.
  */
 export async function estimateArcFees(client: { request: (args: { method: "eth_gasPrice" }) => Promise<unknown> }) {
-  const gasPrice = BigInt((await client.request({ method: "eth_gasPrice" })) as string)
+  let gasPrice: bigint
+  try {
+    gasPrice = BigInt((await client.request({ method: "eth_gasPrice" })) as string)
+  } catch {
+    // The fee quote is a convenience: if every RPC is unreachable right now, assume a
+    // normal Arc price (20-25 gwei) rather than failing a transaction that is otherwise fine.
+    gasPrice = 30_000_000_000n
+  }
   const tip = 1_000_000_000n
   const base = gasPrice > MIN_FEE_PER_GAS ? gasPrice : MIN_FEE_PER_GAS
   return { maxFeePerGas: base * 2n + tip, maxPriorityFeePerGas: tip }
@@ -207,18 +226,22 @@ export function networkByChainId(id?: number | null): ArcNetwork | undefined {
 // because the endpoints answer at most 30 calls per batch.
 export const RPC_BATCH_SIZE = 25
 
-function rpcHttp(url: string) {
+function rpcHttp(url: string, retryCount: number) {
   return http(url, {
     batch: { batchSize: RPC_BATCH_SIZE, wait: 20 },
-    retryCount: 4,
+    retryCount,
     retryDelay: 250,
-    timeout: 15_000,
+    timeout: 10_000,
   })
 }
 
+/**
+ * With several endpoints, a failing one is skipped after a single retry and the next is
+ * tried straight away (a dead endpoint costs well under a second, not several).
+ */
 export function arcTransport(network: ArcNetwork): Transport {
-  const list = network.rpcUrls.map(rpcHttp)
-  return list.length > 1 ? fallback(list) : list[0]
+  if (network.rpcUrls.length === 1) return rpcHttp(network.rpcUrls[0], 4)
+  return fallback(network.rpcUrls.map((u) => rpcHttp(u, 1)), { retryCount: 2, retryDelay: 250 })
 }
 
 const clients = new Map<NetworkKey, PublicClient>()

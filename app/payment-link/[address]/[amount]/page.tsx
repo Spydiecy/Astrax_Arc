@@ -45,6 +45,7 @@ export default function PaymentPortalPage() {
     if (!isConnected || !address) return
     setPaymentStatus("processing")
     setError("")
+    let sent = false
     try {
       const chainId = network.id
       if (walletChainId !== chainId) await switchChain(wagmiConfig, { chainId })
@@ -59,11 +60,16 @@ export default function PaymentPortalPage() {
         ...(await estimateArcFees(client)),
       })
       setHash(txHash)
+      sent = true
       const receipt = await client.waitForTransactionReceipt({ hash: txHash, timeout: 90_000 })
       if (receipt.status !== "success") throw new Error("Transaction failed on-chain")
       setPaymentStatus("completed")
     } catch (e) {
-      setError(friendlyError(e, network))
+      setError(
+        sent && !/failed on-chain/.test(String((e as Error)?.message))
+          ? "Your payment was sent, but this page couldn't confirm it. Check the transaction on the explorer."
+          : friendlyError(e, network),
+      )
       setPaymentStatus("failed")
     }
   }

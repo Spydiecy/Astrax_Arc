@@ -76,6 +76,11 @@ Known tokens (addresses from Circle's Arc docs, verified on-chain): **USDC**
 (`0x3600…0000`, the ERC-20 view of the native gas token), **EURC**, **USYC**, **cirBTC**
 and **WETH**. Any other ERC-20 works by contract address.
 
+RPC access is resilient: your own Infura or QuickNode endpoints (set in the environment) are
+tried first, then Circle's public endpoint and its partners' keyless endpoints (Blockdaemon,
+dRPC, QuickNode). If one is blocked or rate-limited, Astrax moves to the next within a
+fraction of a second.
+
 `NEXT_PUBLIC_DEFAULT_NETWORK` sets where first-time visitors land (testnet if unset);
 returning users keep their last choice.
 

@@ -258,9 +258,12 @@ export async function deployData(
 // ── Errors ────────────────────────────────────────────────────────────────────
 /** Turn raw viem / RPC errors into a short, accurate reason so the model doesn't guess. */
 export function friendlyError(e: unknown, network: ArcNetwork): string {
-  const err = e as { shortMessage?: string; message?: string; details?: string; cause?: { message?: string } }
+  const err = e as { name?: string; shortMessage?: string; message?: string; details?: string; cause?: { message?: string } }
   const msg = String(err?.shortMessage || err?.message || e || "unknown error")
   const all = `${msg} ${err?.details ?? ""} ${err?.cause?.message ?? ""}`
+  // The browser couldn't reach any Arc RPC at all (viem says just "HTTP request failed.").
+  if (/HttpRequestError|TimeoutError/.test(String(err?.name)) || /HTTP request failed|Failed to fetch|fetch failed|NetworkError|Load failed/i.test(all))
+    return `Couldn't reach the ${network.name} RPC from this browser. An ad-blocker, VPN or a brief rate limit can cause this. Check the explorer before retrying, as a transaction may already have been sent.`
   if (/insufficient funds for gas|exceeds the balance|insufficient funds/i.test(all))
     return `Not enough USDC on ${network.name} to cover the amount plus the network fee.${
       network.faucetUrl ? ` Get test USDC at ${network.faucetUrl}.` : ""

@@ -15,6 +15,7 @@ import { useNetwork } from "@/contexts/NetworkContext"
 import { wagmiConfig } from "@/lib/wagmi"
 import { NATIVE_SYMBOL, estimateArcFees, explorerTx, getPublicClient, isNetworkKey, isSendableAddress, resolveNetwork } from "@/lib/arc"
 import { buildNativeTransfer, friendlyError } from "@/lib/evm"
+import { waitForTx } from "@/lib/wait-tx"
 
 export default function PaymentPortalPage() {
   const params = useParams()
@@ -61,8 +62,12 @@ export default function PaymentPortalPage() {
       })
       setHash(txHash)
       sent = true
-      const receipt = await client.waitForTransactionReceipt({ hash: txHash, timeout: 90_000 })
-      if (receipt.status !== "success") throw new Error("Transaction failed on-chain")
+      const outcome = await waitForTx(network, txHash)
+      if (outcome?.status === "reverted") throw new Error("Transaction failed on-chain")
+      if (!outcome) {
+        setError("Your payment was sent, but it hasn't shown as confirmed yet. Check the transaction on the explorer; don't pay again.")
+        return
+      }
       setPaymentStatus("completed")
     } catch (e) {
       setError(
@@ -173,7 +178,7 @@ export default function PaymentPortalPage() {
         ) : (
           <Button
             onClick={sendPayment}
-            disabled={paymentStatus === "processing" || paymentStatus === "completed"}
+            disabled={paymentStatus === "processing" || paymentStatus === "completed" || Boolean(hash && !error.includes("failed on-chain") && paymentStatus !== "failed")}
             className="w-full bg-gray-800 dark:bg-white text-white dark:text-black hover:bg-gray-700 dark:hover:bg-gray-200 font-semibold py-4 text-lg border-0"
           >
             {paymentStatus === "processing" ? "Processing Payment..." : paymentStatus === "completed" ? "Payment Completed" : `Pay ${amount} ${NATIVE_SYMBOL}`}

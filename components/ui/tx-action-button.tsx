@@ -8,6 +8,7 @@ import { useCredentials } from "@/contexts/CredentialsContext"
 import { wagmiConfig } from "@/lib/wagmi"
 import { estimateArcFees, explorerTx, explorerToken, getPublicClient, resolveNetwork, type NetworkKey } from "@/lib/arc"
 import { buildDeployNFT, buildDeployToken, friendlyError, type PreparedTx } from "@/lib/evm"
+import { waitForTx } from "@/lib/wait-tx"
 
 export interface PendingAction {
   action: "sendNative" | "sendToken" | "deployToken" | "deployNFT" | "mintTokens" | "deployContract" | "callContract"
@@ -41,7 +42,9 @@ const short = (a?: string) => (a && a.length > 12 ? `${a.slice(0, 6)}…${a.slic
 // Confirmed actions are remembered per tool call, so a reloaded chat shows
 // "Confirmed" instead of offering to pay again.
 const doneKey = (id: string) => `astrax_tx_done:${id}`
-interface DoneRecord { hash: string; contract?: string }
+// `pending` is saved the moment the wallet sends, so a refresh resumes watching the
+// transaction instead of offering to send it again.
+interface DoneRecord { hash: string; contract?: string; pending?: boolean }
 
 export function TxActionButton({ id, action, onDone }: { id?: string; action: PendingAction; onDone?: (hash: string) => void }) {
   const { address, isConnected, chainId: walletChainId } = useAccount()
@@ -52,18 +55,58 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
   const [phase, setPhase] = useState<"idle" | "wallet" | "mining" | "done" | "error">("idle")
   const [errMsg, setErrMsg] = useState("")
 
+  /** Wait for a sent transaction, then record the result (or explain why not). */
+  const finish = useCallback(
+    async (txHash: `0x${string}`) => {
+      setHash(txHash)
+      setPhase("mining")
+      setErrMsg("")
+      const outcome = await waitForTx(network, txHash)
+      if (!outcome) {
+        // Sent, but we couldn't see it confirm in time. Keep the pending record so a
+        // refresh (or "Check again") picks it up, and never offer to send it again.
+        setErrMsg("Your transaction was sent, but it hasn't shown as confirmed yet.")
+        setPhase("error")
+        return
+      }
+      if (outcome.status === "reverted") {
+        if (id) localStorage.removeItem(doneKey(id))
+        setHash(undefined)
+        setErrMsg("The transaction was mined but reverted on-chain, so nothing happened. You can try again.")
+        setPhase("error")
+        return
+      }
+      const created = outcome.contractAddress
+      // Let the server record the address (it re-checks the deployment on-chain),
+      // so the agent can call this contract's functions by name afterwards.
+      if (action.contractId && created) {
+        await fetch(`/api/contracts/${encodeURIComponent(action.contractId)}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ hash: txHash }),
+        }).catch(() => {})
+      }
+      if (created) setContract(created)
+      if (id) localStorage.setItem(doneKey(id), JSON.stringify({ hash: txHash, contract: created } satisfies DoneRecord))
+      setPhase("done")
+      onDone?.(txHash)
+    },
+    [id, action.contractId, network, onDone],
+  )
+
   useEffect(() => {
     if (!id) return
     try {
       const rec = JSON.parse(localStorage.getItem(doneKey(id)) || "null") as DoneRecord | null
-      if (rec?.hash) {
-        setHash(rec.hash)
-        setContract(rec.contract)
-        setPhase("done")
-      }
+      if (!rec?.hash) return
+      setHash(rec.hash)
+      setContract(rec.contract)
+      if (rec.pending) finish(rec.hash as `0x${string}`) // resume after a refresh
+      else setPhase("done")
     } catch {
       /* ignore corrupt entries */
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
   const execute = useCallback(async () => {
@@ -106,35 +149,19 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
         })
       }
       sentHash = txHash
-      setHash(txHash)
-      setPhase("mining")
-      const receipt = await client.waitForTransactionReceipt({ hash: txHash, timeout: 90_000 })
-      if (receipt.status !== "success") throw new Error("The transaction was mined but reverted on-chain.")
-      const created = receipt.contractAddress ?? undefined
-      // Let the server record the address (it re-checks the deployment on-chain),
-      // so the agent can call this contract's functions by name afterwards.
-      if (action.contractId && created) {
-        await fetch(`/api/contracts/${encodeURIComponent(action.contractId)}`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ hash: txHash }),
-        }).catch(() => {})
-      }
-      if (created) setContract(created)
-      if (id) localStorage.setItem(doneKey(id), JSON.stringify({ hash: txHash, contract: created } satisfies DoneRecord))
-      setPhase("done")
-      onDone?.(txHash)
+      // Remember it right away: a refresh must never forget a payment that was sent.
+      if (id) localStorage.setItem(doneKey(id), JSON.stringify({ hash: txHash, pending: true } satisfies DoneRecord))
+      await finish(txHash)
     } catch (e) {
-      // Once the wallet has sent it, a failure here is about confirming, not sending.
-      const reverted = /reverted on-chain/.test(String((e as Error)?.message))
+      // The wallet may have sent it before something else failed: never invite a resend.
       setErrMsg(
-        sentHash && !reverted
-          ? "Your transaction was sent, but this page couldn't confirm it. Check it on the explorer; it may already be done."
+        sentHash
+          ? "Your transaction was sent, but it hasn't shown as confirmed yet."
           : friendlyError(e, network),
       )
       setPhase("error")
     }
-  }, [id, action, address, isConnected, walletChainId, network, onDone])
+  }, [id, action, address, isConnected, walletChainId, network, finish])
 
   // NFT artwork + links to the IPFS image and metadata, shown before and after confirming.
   const nftPreview = action.action === "deployNFT" && action.image ? (
@@ -189,7 +216,11 @@ export function TxActionButton({ id, action, onDone }: { id?: string; action: Pe
             <a href={explorerTx(network, hash)} target="_blank" rel="noreferrer" className="ml-1 underline whitespace-nowrap">View transaction</a>
           )}
         </span>
-        {!hash && <button onClick={() => setPhase("idle")} className="underline flex-shrink-0 text-xs">retry</button>}
+        {hash ? (
+          <button onClick={() => finish(hash as `0x${string}`)} className="underline flex-shrink-0 text-xs">check again</button>
+        ) : (
+          <button onClick={() => setPhase("idle")} className="underline flex-shrink-0 text-xs">retry</button>
+        )}
       </div>
     )
   }

@@ -11,6 +11,7 @@ import { CustomConnectButton } from "@/components/ui/connect-wallet-button"
 import { wagmiConfig } from "@/lib/wagmi"
 import { estimateArcFees, explorerTx, getPublicClient, resolveNetwork, addrKey, type NetworkKey } from "@/lib/arc"
 import { buildNativeTransfer, friendlyError } from "@/lib/evm"
+import { waitForTx } from "@/lib/wait-tx"
 
 interface Link {
   id: string
@@ -83,6 +84,58 @@ export default function PayPage() {
   }, [link])
 
   const network = resolveNetwork(link?.network)
+  const sentKey = `astrax_pay_sent:${id}`
+
+  /** Confirm a sent payment (server + browser race), then have the server verify it and mark the link paid. */
+  const confirmSent = useCallback(
+    async (hash: `0x${string}`, net = network) => {
+      setPhase("confirming")
+      setTxError("")
+      const outcome = await waitForTx(net, hash)
+      if (outcome?.status === "reverted") {
+        localStorage.removeItem(sentKey)
+        setSentHash("")
+        setTxError("The payment transaction reverted on-chain, so nothing was paid. You can try again.")
+        setPhase("error")
+        return
+      }
+      // Whether or not we saw the receipt, ask the server to check it against the link.
+      for (let i = 0; i < 6; i++) {
+        const r = await fetch(`/api/payment-links/${encodeURIComponent(id)}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ hash }),
+        }).catch(() => null)
+        const j = await r?.json().catch(() => ({}))
+        if (j?.link) setLink(j.link)
+        if (j?.matched || j?.link?.status === "paid") {
+          localStorage.removeItem(sentKey)
+          setPhase("idle")
+          return
+        }
+        await new Promise((res) => setTimeout(res, 2500))
+      }
+      // Sent but not matched yet: keep it, the page keeps polling and updates by itself.
+      setTxError(outcome ? "Payment sent. Waiting for it to be matched to this link." : "Payment sent, but it hasn't shown as confirmed yet. This page updates by itself once it does.")
+      setPhase("idle")
+    },
+    [id, network, sentKey],
+  )
+
+  // After a refresh, pick up a payment that was already sent instead of offering to pay again.
+  useEffect(() => {
+    if (!link || link.status !== "open") return
+    const saved = localStorage.getItem(sentKey)
+    if (saved && /^0x[0-9a-fA-F]{64}$/.test(saved) && !sentHash) {
+      setSentHash(saved)
+      confirmSent(saved as `0x${string}`, resolveNetwork(link.network))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [link?.id, link?.status])
+
+  useEffect(() => {
+    if (link?.status === "paid") localStorage.removeItem(sentKey)
+  }, [link?.status, sentKey])
 
   const pay = async () => {
     if (!link || !address || addrKey(address) === addrKey(link.recipient)) return
@@ -106,32 +159,13 @@ export default function PayPage() {
         ...(await estimateArcFees(client)),
       })
       sent = hash
+      // Remember it right away: a refresh must never forget a payment that was sent.
+      localStorage.setItem(sentKey, hash)
       setSentHash(hash)
-      setPhase("confirming")
-      const receipt = await client.waitForTransactionReceipt({ hash, timeout: 90_000 })
-      if (receipt.status !== "success") throw new Error("The transaction failed on-chain.")
-      // Ask the server to verify it on-chain and mark the link paid (retry briefly for RPC lag).
-      for (let i = 0; i < 4; i++) {
-        const r = await fetch(`/api/payment-links/${encodeURIComponent(link.id)}`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ hash }),
-        })
-        const j = await r.json().catch(() => ({}))
-        if (j.link) setLink(j.link)
-        if (j.matched || j.link?.status === "paid") break
-        await new Promise((res) => setTimeout(res, 2500))
-      }
-      setPhase("idle")
+      await confirmSent(hash)
     } catch (e) {
-      // After the wallet has sent it, don't invite a second payment: the server keeps
-      // checking the chain, and this page updates once it sees the payment.
-      setTxError(
-        sent && !/failed on-chain/.test(String((e as Error)?.message))
-          ? "Your payment was sent, but this page couldn't confirm it. It will update by itself once the payment is seen on-chain."
-          : friendlyError(e, network),
-      )
-      setPhase("error")
+      setTxError(sent ? "Your payment was sent. This page will update by itself once it is seen on-chain." : friendlyError(e, network))
+      setPhase(sent ? "idle" : "error")
     }
   }
 
@@ -231,8 +265,8 @@ export default function PayPage() {
             </button>
           )}
 
-          {phase === "error" && (
-            <p className="text-sm text-red-600 dark:text-red-400 text-center" role="alert">{txError}</p>
+          {txError && (
+            <p className={`text-sm text-center ${phase === "error" ? "text-red-600 dark:text-red-400" : "text-gray-500"}`} role={phase === "error" ? "alert" : "status"}>{txError}</p>
           )}
           {sentHash && link.status === "open" && phase !== "error" && (
             <p className="text-xs text-center text-gray-500">

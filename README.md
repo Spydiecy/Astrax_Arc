@@ -6,9 +6,9 @@
 
 ### Talk to Arc in plain English.
 
-An AI agent that turns a chat message into a real on-chain action on **Arc Mainnet**
-and **Arc Testnet**: USDC payments, tokens, NFTs, your own smart contracts, recurring
-transfers and self-tracking payment links. You stay in control of every signature.
+**Astrax is the AI agent for Arc.** Just say what you want: send USDC, deploy tokens,
+NFTs and your own smart contracts, schedule payments, get paid with self-tracking links.
+Live on Arc Mainnet and Testnet, and you approve every signature.
 
 [Features in depth](FEATURES.md) · [Quick start](#-quick-start) · [Arc docs](https://docs.arc.io)
 

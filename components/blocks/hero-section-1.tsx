@@ -162,7 +162,7 @@ export function HeroSection() {
                                     </h1>
                                     <p
                                         className="mx-auto mt-8 max-w-2xl text-balance text-lg">
-                                        Send USDC, create tokens and NFTs, deploy your own smart contracts, schedule payments and share payment links that track themselves on Arc Mainnet and Testnet, all by chatting. Approve every step in your own wallet.
+                                        Just say what you want: send USDC, deploy tokens, NFTs and your own smart contracts, schedule payments, get paid with self-tracking links. Live on Arc Mainnet and Testnet, and you approve every signature.
                                     </p>
                                 </AnimatedGroup>
 
@@ -367,7 +367,7 @@ export function HeroSection() {
                             <div className="md:col-span-3">
                                 <Logo className="mb-4" />
                                 <p className="mb-4 max-w-sm text-muted-foreground">
-                                    Your AI agent for Arc. Chat in plain English, act on-chain.
+                                    The AI agent for Arc. Say what you want, Astrax does it on-chain.
                                 </p>
                             </div>
 

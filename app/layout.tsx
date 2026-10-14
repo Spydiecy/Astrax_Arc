@@ -13,9 +13,33 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const TITLE = "Astrax - AI Agent for Arc"
+const DESCRIPTION =
+  "Astrax is the AI agent for Arc. Just say what you want: send USDC, deploy tokens, NFTs and your own smart contracts, schedule payments, get paid with self-tracking links. Live on Arc Mainnet and Testnet, and you approve every signature."
+
+// Absolute URLs for link previews. Set NEXT_PUBLIC_SITE_URL to your domain; on Vercel the
+// production domain is picked up automatically.
+const SITE_URL =
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "http://localhost:3000")
+
 export const metadata: Metadata = {
-  title: "Astrax - AI Agent for Arc",
-  description: "Astrax is an AI agent that turns natural-language chat into on-chain actions on Arc Mainnet and Testnet: send USDC, create tokens, schedule payments, and more.",
+  metadataBase: new URL(SITE_URL),
+  title: TITLE,
+  description: DESCRIPTION,
+  openGraph: {
+    type: "website",
+    siteName: "Astrax",
+    title: TITLE,
+    description: DESCRIPTION,
+    images: [{ url: "/hero.png", alt: "Astrax chat on Arc with a live price chart" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: TITLE,
+    description: DESCRIPTION,
+    images: ["/hero.png"],
+  },
 };
 
 export default function RootLayout({

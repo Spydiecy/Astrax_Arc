@@ -46,6 +46,7 @@ import { uploadJSONToIPFS, isPinataConfigured, ipfsCid, gatewayUrl } from "@/lib
 import { IMAGE_FORMATS_LABEL } from "@/lib/images"
 import { explainTarget } from "@/lib/explain"
 import { compileSolidity } from "@/lib/solc"
+import { sanitizeMermaid } from "@/lib/mermaid"
 import { abiFunctions, coerceArgs, describeFunction, isReadOnly, pickFunction, stringifyResult } from "@/lib/abi-args"
 import { recentActivity } from "@/lib/activity"
 import {
@@ -1155,7 +1156,7 @@ contract Counter {
         }),
         execute: async ({ title, mermaid }) => {
           try {
-            const encoded = Buffer.from(mermaid).toString("base64url")
+            const encoded = Buffer.from(sanitizeMermaid(mermaid)).toString("base64url")
             const r = await fetch(`https://mermaid.ink/img/${encoded}`)
             if (!r.ok) return { error: "Could not render the diagram. Check the Mermaid syntax." }
             const imageBase64 = Buffer.from(await r.arrayBuffer()).toString("base64")
